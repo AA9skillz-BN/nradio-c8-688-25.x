@@ -1,18 +1,22 @@
 #!/bin/bash
-cd openwrt
+# --------------------------------------------------------
+# DIY script 1: Executed before feeds update & install
+# --------------------------------------------------------
 
-# 1. MT5700M 5G 模块管理插件
-git clone --depth=1 https://github.com/LianXia233/luci-app-mt5700m.git package/custom/luci-app-mt5700m
+cd openwrt || true
 
-# 2. iStoreOS 风格套件 (QuickStart 首页向导 + iStore 核心库)
-git clone --depth=1 https://github.com/linkease/istore.git package/custom/istore
-git clone --depth=1 https://github.com/linkease/istore-ui.git package/custom/istore-ui
+# 1. 引入 5G 模组管理插件源 (MT5700M)
+if [ ! -d "package/custom/luci-app-mt5700m" ]; then
+    git clone --depth=1 https://github.com/kossev-io/luci-app-mt5700m.git package/custom/luci-app-mt5700m 2>/dev/null || true
+fi
 
-# 3. OpenClash 源码 (主分支支持 nftables 及 24+/25.x 环境)
-git clone --depth=1 -b master https://github.com/vernesong/OpenClash.git package/custom/luci-app-openclash
+# 2. 引入在线 OTA 升级插件 (luci-app-autoupdate)
+if [ ! -d "package/custom/luci-app-autoupdate" ]; then
+    git clone --depth=1 https://github.com/Hyy2001X/luci-app-autoupdate.git package/custom/luci-app-autoupdate 2>/dev/null || true
+fi
 
-# 4. Turbo ACC 网络加速 (Flow Offload / BBR / FullCone NAT)
-git clone --depth=1 https://github.com/chenmozhijin/luci-app-turboacc.git package/custom/luci-app-turboacc
+# 3. 【核心根治】在 feeds 建立索引前，彻底从源码中剔除已淘汰的 kmod-usb2 依赖
+find package/ -type f -name "Makefile" -exec sed -i 's/+kmod-usb2//g' {} + 2>/dev/null || true
 
-# 5. 通用温控风扇控制插件 (支持自定义无级调速与手动 PWM 设定)
-git clone --depth=1 https://github.com/JiaY-shi/fancontrol.git package/custom/luci-app-fancontrol
+# 4. 彻底清空临时依赖缓存目录，防止残留过期的依赖元数据
+rm -rf tmp
