@@ -6,16 +6,23 @@
 cd openwrt || true
 
 # 1. 自动覆盖自定义 DTS 设备树文件
+DTS_TARGET="target/linux/mediatek/dts/mt7981b-nradio-c8-668gl.dts"
 if [ -f "$GITHUB_WORKSPACE/mt7981b-nradio-c8-668gl.dts" ]; then
     echo "Found custom DTS: mt7981b-nradio-c8-668gl.dts, overwriting target..."
-    cp -f "$GITHUB_WORKSPACE/mt7981b-nradio-c8-668gl.dts" target/linux/mediatek/dts/mt7981b-nradio-c8-668gl.dts
+    cp -f "$GITHUB_WORKSPACE/mt7981b-nradio-c8-668gl.dts" "$DTS_TARGET"
 elif [ -f "$GITHUB_WORKSPACE/c8-688.dts" ]; then
     echo "Found custom DTS: c8-688.dts, overwriting target..."
-    cp -f "$GITHUB_WORKSPACE/c8-688.dts" target/linux/mediatek/dts/mt7981b-nradio-c8-668gl.dts
+    cp -f "$GITHUB_WORKSPACE/c8-688.dts" "$DTS_TARGET"
 fi
 
-# 2. 【核心双系统适配 1】内核引导参数强制锁定副系统 rootfs_2nd
-sed -i 's/root=PARTLABEL=rootfs/root=PARTLABEL=rootfs_2nd/g' target/linux/mediatek/dts/mt7981* 2>/dev/null || true
+# 2. 【安全双系统适配】定向替换目标 DTS 中的 bootargs，锁定副系统 rootfs_2nd，避免破坏首行
+if [ -f "$DTS_TARGET" ]; then
+    # 去除可能存在的 Windows 换行符 (CRLF -> LF)
+    sed -i 's/\r$//' "$DTS_TARGET"
+    if grep -q "root=PARTLABEL=rootfs" "$DTS_TARGET"; then
+        sed -i 's/root=PARTLABEL=rootfs/root=PARTLABEL=rootfs_2nd/g' "$DTS_TARGET"
+    fi
+fi
 
 # 3. 【核心双系统适配 2】Hook sysupgrade 升级逻辑，防止一键升级覆盖主系统 (System A)
 mkdir -p package/base-files/files/etc/uci-defaults
