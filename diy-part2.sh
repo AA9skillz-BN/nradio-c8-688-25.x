@@ -1,7 +1,7 @@
 #!/bin/bash
 cd openwrt
 
-# 1. 自动将你仓库根目录下上传的自定义设备树覆盖到源码目录
+# 1. 自动覆盖自定义 DTS 设备树文件
 if [ -f "$GITHUB_WORKSPACE/mt7981b-nradio-c8-668gl.dts" ]; then
     echo "Found custom DTS: mt7981b-nradio-c8-668gl.dts, overwriting target..."
     cp -f "$GITHUB_WORKSPACE/mt7981b-nradio-c8-668gl.dts" target/linux/mediatek/dts/mt7981b-nradio-c8-668gl.dts
@@ -10,22 +10,42 @@ elif [ -f "$GITHUB_WORKSPACE/c8-688.dts" ]; then
     cp -f "$GITHUB_WORKSPACE/c8-688.dts" target/linux/mediatek/dts/mt7981b-nradio-c8-668gl.dts
 fi
 
-# 2. 策略 B 适配：引导参数指向 rootfs_2nd
+# 2. 策略 B 关键适配：调整内核引导参数，让启动自动寻址 rootfs_2nd
 sed -i 's/root=PARTLABEL=rootfs/root=PARTLABEL=rootfs_2nd/g' target/linux/mediatek/dts/mt7981* 2>/dev/null || true
 
-# 3. 锁定管理后台 IP 为当前使用的 192.168.66.1
+# 3. 锁定管理后台 IP 为 192.168.66.1
 sed -i 's/192.168.1.1/192.168.66.1/g' package/base-files/files/bin/config_generate
 
-# 4. 默认主题设置为 Argon (匹配 iStoreOS 风格)
-sed -i 's/luci-theme-bootstrap/luci-theme-argon/g' feeds/luci/collections/luci/Makefile || true
+# 4. 【核心修复】全量抹除 kmod-usb2 依赖，防止 OpenWrt 25.x (Linux 6.12) apk 依赖校验失败中断
+find package/ feeds/ -type f -name "Makefile" -exec sed -i 's/+kmod-usb2//g' {} + 2>/dev/null || true
+find package/ feeds/ -type f -name "*.mk" -exec sed -i 's/+kmod-usb2//g' {} + 2>/dev/null || true
+sed -i '/CONFIG_PACKAGE_kmod-usb2/d' .config 2>/dev/null || true
 
-# 5. 预设时区为上海 (CST-8)
+# 5. 默认主题设置为 Argon (iStoreOS 现代视觉风格)
+sed -i 's/luci-theme-bootstrap/luci-theme-argon/g' feeds/luci/collections/luci/Makefile 2>/dev/null || true
+
+# 6. 预设时区为上海 (CST-8)
 sed -i "s/'UTC'/'CST-8'\n\t\tset system.@system[-1].zonename='Asia\/Shanghai'/g" package/base-files/files/bin/config_generate
 
-# 6. 预设开启 TCP BBR 拥塞控制
+# 7. 预设开启 TCP BBR 拥塞控制
 sed -i -e '$a net.core.default_qdisc=fq' -e '$a net.ipv4.tcp_congestion_control=bbr' package/base-files/files/etc/sysctl.conf
 
-# 7. 注入 MT5700M 蜂窝管理工具集 (测邻区/读速率/查5QI/锁小区)
+# 8. 绑定你的 GitHub 仓库用于后台一键 OTA 更新 (AA9skillz-BN/nradio-c8-688-25.x)
+mkdir -p package/custom/luci-app-autoupdate/root/etc/uci-defaults
+cat << 'EOF' > package/custom/luci-app-autoupdate/root/etc/uci-defaults/99-autoupdate
+uci -q batch << EOU
+set autoupdate.@main[0].github_user='AA9skillz-BN'
+set autoupdate.@main[0].github_repo='nradio-c8-688-25.x'
+commit autoupdate
+EOU
+exit 0
+EOF
+
+# 9. 注入当前固件构建版本号标识
+CURRENT_VER=$(date +%Y.%m.%d)
+echo "$CURRENT_VER" > package/base-files/files/etc/openwrt_version
+
+# 10. 注入 MT5700M 蜂窝管理工具集 (测邻区/读速率/查5QI/锁小区)
 mkdir -p package/base-files/files/usr/bin
 cat << 'EOF' > package/base-files/files/usr/bin/cpe-tool
 #!/bin/sh
