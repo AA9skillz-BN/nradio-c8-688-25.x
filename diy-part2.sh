@@ -65,3 +65,34 @@ case "$1" in
 esac
 EOF
 chmod +x package/base-files/files/usr/bin/cpe-tool
+
+# 6. eMMC 首次开机全自动无损拉满 /overlay 存储空间服务
+mkdir -p package/base-files/files/etc/init.d
+cat << 'EOF' > package/base-files/files/etc/init.d/expand-emmc
+#!/bin/sh /etc/rc.common
+START=99
+
+boot() {
+    DISK="/dev/mmcblk0"
+    if [ ! -b "$DISK" ]; then
+        exit 0
+    fi
+
+    TARGET_PART=$(mount | grep 'overlayfs:/overlay' | awk '{print $1}')
+    if [ -z "$TARGET_PART" ]; then
+        TARGET_PART=$(df -h /overlay 2>/dev/null | tail -n 1 | awk '{print $1}')
+    fi
+
+    PART_NUM=$(echo "$TARGET_PART" | sed -n 's/.*mmcblk0p\([0-9]*\)/\1/p')
+
+    if [ -n "$PART_NUM" ] && command -v parted >/dev/null 2>&1; then
+        echo "正在自动扩展 eMMC 根目录至最大容量..."
+        parted -s "$DISK" resizepart "$PART_NUM" 100%
+        resize2fs "$TARGET_PART" 2>/dev/null
+    fi
+
+    /etc/init.d/expand-emmc disable
+    rm -f /etc/init.d/expand-emmc
+}
+EOF
+chmod +x package/base-files/files/etc/init.d/expand-emmc
