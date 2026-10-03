@@ -10,16 +10,22 @@ elif [ -f "$GITHUB_WORKSPACE/c8-688.dts" ]; then
     cp -f "$GITHUB_WORKSPACE/c8-688.dts" target/linux/mediatek/dts/mt7981b-nradio-c8-668gl.dts
 fi
 
-# 2. 默认主题设置为 Argon (匹配 iStoreOS 现代视觉风格)
+# 2. 策略 B 适配：引导参数指向 rootfs_2nd
+sed -i 's/root=PARTLABEL=rootfs/root=PARTLABEL=rootfs_2nd/g' target/linux/mediatek/dts/mt7981* 2>/dev/null || true
+
+# 3. 锁定管理后台 IP 为当前使用的 192.168.66.1
+sed -i 's/192.168.1.1/192.168.66.1/g' package/base-files/files/bin/config_generate
+
+# 4. 默认主题设置为 Argon (匹配 iStoreOS 风格)
 sed -i 's/luci-theme-bootstrap/luci-theme-argon/g' feeds/luci/collections/luci/Makefile || true
 
-# 3. 预设时区为上海 (CST-8)
+# 5. 预设时区为上海 (CST-8)
 sed -i "s/'UTC'/'CST-8'\n\t\tset system.@system[-1].zonename='Asia\/Shanghai'/g" package/base-files/files/bin/config_generate
 
-# 4. 预设开启 TCP BBR 拥塞控制
+# 6. 预设开启 TCP BBR 拥塞控制
 sed -i -e '$a net.core.default_qdisc=fq' -e '$a net.ipv4.tcp_congestion_control=bbr' package/base-files/files/etc/sysctl.conf
 
-# 5. 注入 MT5700M 蜂窝管理与故障排查工具 (终端一键测邻区/读签约速率/查5QI/锁小区)
+# 7. 注入 MT5700M 蜂窝管理工具集 (测邻区/读速率/查5QI/锁小区)
 mkdir -p package/base-files/files/usr/bin
 cat << 'EOF' > package/base-files/files/usr/bin/cpe-tool
 #!/bin/sh
@@ -65,34 +71,3 @@ case "$1" in
 esac
 EOF
 chmod +x package/base-files/files/usr/bin/cpe-tool
-
-# 6. eMMC 首次开机全自动无损拉满 /overlay 存储空间服务
-mkdir -p package/base-files/files/etc/init.d
-cat << 'EOF' > package/base-files/files/etc/init.d/expand-emmc
-#!/bin/sh /etc/rc.common
-START=99
-
-boot() {
-    DISK="/dev/mmcblk0"
-    if [ ! -b "$DISK" ]; then
-        exit 0
-    fi
-
-    TARGET_PART=$(mount | grep 'overlayfs:/overlay' | awk '{print $1}')
-    if [ -z "$TARGET_PART" ]; then
-        TARGET_PART=$(df -h /overlay 2>/dev/null | tail -n 1 | awk '{print $1}')
-    fi
-
-    PART_NUM=$(echo "$TARGET_PART" | sed -n 's/.*mmcblk0p\([0-9]*\)/\1/p')
-
-    if [ -n "$PART_NUM" ] && command -v parted >/dev/null 2>&1; then
-        echo "正在自动扩展 eMMC 根目录至最大容量..."
-        parted -s "$DISK" resizepart "$PART_NUM" 100%
-        resize2fs "$TARGET_PART" 2>/dev/null
-    fi
-
-    /etc/init.d/expand-emmc disable
-    rm -f /etc/init.d/expand-emmc
-}
-EOF
-chmod +x package/base-files/files/etc/init.d/expand-emmc
