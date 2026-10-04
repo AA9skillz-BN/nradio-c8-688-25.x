@@ -46,10 +46,10 @@
 ## 🤝 致谢与鸣谢
 ImmortalWrt Project
 
-FAN789/luci-app-mt5700m
+**FAN789/luci-app-mt5700m**
 
-FAN789/luci-app-h5000m-fancontrol
+**FAN789/luci-app-h5000m-fancontrol**
 
-Hyy2001X/luci-app-autoupdate
+**Hyy2001X/luci-app-autoupdate**
 
-jerrykuku/luci-theme-argon
+**jerrykuku/luci-theme-argon**
