@@ -94,7 +94,9 @@ sed -i 's/192.168.1.1/192.168.66.1/g' package/base-files/files/bin/config_genera
 # 6. 【满血 Wi-Fi 射频调优】预设 160MHz、满血功率、专属 SSID
 cat << 'EOF' > package/base-files/files/etc/uci-defaults/98-fullpower-wifi
 #!/bin/sh
-# 遍历配置无线设备
+# 强制生成初始无线配置（如果尚未生成）
+[ ! -f /etc/config/wireless ] && wifi config
+
 for radio in $(uci -q show wireless | grep '=wifi-device' | cut -d'.' -f2 | cut -d'=' -f1); do
     uci -q set wireless.${radio}.disabled='0'
     uci -q set wireless.${radio}.country='CN'
@@ -104,7 +106,6 @@ for radio in $(uci -q show wireless | grep '=wifi-device' | cut -d'.' -f2 | cut 
     iface=$(uci -q show wireless | grep "device='${radio}'" | cut -d'.' -f2 | head -n 1)
 
     if [ "$band" = "5g" ] || [ "$band" = "6g" ] || echo "$htmode" | grep -q "HE80\|HE160\|VHT80"; then
-        # 5G 射频开启 160MHz 频宽与最大发射功率
         uci -q set wireless.${radio}.channel='36'
         uci -q set wireless.${radio}.htmode='HE160'
         if [ -n "$iface" ]; then
@@ -112,7 +113,6 @@ for radio in $(uci -q show wireless | grep '=wifi-device' | cut -d'.' -f2 | cut 
             uci -q set wireless.${iface}.encryption='none'
         fi
     else
-        # 2.4G 射频开启 40MHz 频宽
         uci -q set wireless.${radio}.channel='auto'
         uci -q set wireless.${radio}.htmode='HE40'
         if [ -n "$iface" ]; then
@@ -131,6 +131,7 @@ if [ -f /etc/config/wireless ]; then
 fi
 
 uci commit wireless
+wifi reload 2>/dev/null || true
 exit 0
 EOF
 
@@ -153,7 +154,7 @@ cat << 'EOF' >> package/base-files/files/etc/sysctl.conf
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
 
-# 提升 5G 高吞吐发包队列深度，消除软中断瓶颈
+# 提升 5G 高吞吐发包队列深度
 net.core.netdev_max_backlog=16384
 net.core.rmem_max=16777216
 net.core.wmem_max=16777216
