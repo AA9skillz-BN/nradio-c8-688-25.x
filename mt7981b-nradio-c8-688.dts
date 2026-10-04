@@ -52,6 +52,16 @@
 	};
 };
 
+/* 新增：定义芯片引脚复用 (Pinctrl) */
+&pio {
+	emmc_pins: emmc-pins {
+		mux {
+			function = "emmc";
+			groups = "emmc_51";
+		};
+	};
+};
+
 &uart0 {
 	status = "okay";
 };
@@ -91,6 +101,9 @@
 };
 
 &mmc0 {
+	/* 绑定上方定义的 emmc_pins 引脚组 */
+	pinctrl-names = "default";
+	pinctrl-0 = <&emmc_pins>;
 	bus-width = <8>;
 	max-frequency = <52000000>;
 	cap-mmc-highspeed;
@@ -103,5 +116,10 @@
 };
 
 &xhci {
+	status = "okay";
+};
+
+/* 新增：激活 MT7981 内置 Wi-Fi 模块 */
+&wmac {
 	status = "okay";
 };
