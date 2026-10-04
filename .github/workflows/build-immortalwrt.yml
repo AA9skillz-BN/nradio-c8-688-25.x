@@ -134,7 +134,7 @@ jobs:
         BUILD_VER="$(date +%Y.%m.%d-%H%M)"
         echo "$BUILD_VER" > version.txt
         echo "BUILD_VER=$BUILD_VER" >> $GITHUB_ENV
-        sha256sum immortalwrt-*.bin > sha256sums
+        sha256sum immortalwrt-* > sha256sums
         
         echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_OUTPUT
