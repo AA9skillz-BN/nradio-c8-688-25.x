@@ -5,24 +5,53 @@
 
 cd openwrt || true
 
-# 1. 自动覆盖自定义 DTS 设备树文件
-DTS_TARGET="target/linux/mediatek/dts/mt7981b-nradio-c8-668gl.dts"
-if [ -f "$GITHUB_WORKSPACE/mt7981b-nradio-c8-668gl.dts" ]; then
-    echo "Found custom DTS: mt7981b-nradio-c8-668gl.dts, overwriting target..."
-    cp -f "$GITHUB_WORKSPACE/mt7981b-nradio-c8-668gl.dts" "$DTS_TARGET"
-elif [ -f "$GITHUB_WORKSPACE/c8-688.dts" ]; then
-    echo "Found custom DTS: c8-688.dts, overwriting target..."
-    cp -f "$GITHUB_WORKSPACE/c8-688.dts" "$DTS_TARGET"
-fi
+# 1. 动态注入 nradio_c8-688 到 filogic.mk 并规范设备名
+TARGET_MK="target/linux/mediatek/image/filogic.mk"
+if [ -f "$TARGET_MK" ]; then
+    sed -i 's/nradio_c8-668gl/nradio_c8-688/g' "$TARGET_MK"
+    sed -i 's/mt7981b-nradio-c8-668gl/mt7981b-nradio-c8-688/g' "$TARGET_MK"
+    sed -i 's/C8-668GL/C8-688/g' "$TARGET_MK"
+    
+    if ! grep -q "Device/nradio_c8-688" "$TARGET_MK"; then
+        cat << 'EOF' >> "$TARGET_MK"
 
-# 2. 【安全双系统适配】定向替换目标 DTS 中的 bootargs，锁定副系统 rootfs_2nd，避免破坏首行
-if [ -f "$DTS_TARGET" ]; then
-    # 去除可能存在的 Windows 换行符 (CRLF -> LF)
-    sed -i 's/\r$//' "$DTS_TARGET"
-    if grep -q "root=PARTLABEL=rootfs" "$DTS_TARGET"; then
-        sed -i 's/root=PARTLABEL=rootfs/root=PARTLABEL=rootfs_2nd/g' "$DTS_TARGET"
+define Device/nradio_c8-688
+  DEVICE_VENDOR := NRadio
+  DEVICE_MODEL := C8-688
+  DEVICE_DTS := mt7981b-nradio-c8-688
+  DEVICE_DTS_DIR := $(DTS_DIR)/mediatek
+  SUPPORTED_DEVICES := nradio,c8-688
+  UBINIZE_OPTS := -E 5
+  IMAGE_SIZE := 65536k
+  IMAGES += sysupgrade.bin
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += nradio_c8-688
+EOF
     fi
 fi
+
+# 2. 覆盖自定义 DTS 并修复 Linux 6.12 命名与分区挂载
+DTS_TARGET="target/linux/mediatek/dts/mt7981b-nradio-c8-688.dts"
+mkdir -p target/linux/mediatek/dts target/linux/mediatek/files-6.12/arch/arm64/boot/dts/mediatek
+
+for DTS_SRC in "$GITHUB_WORKSPACE/mt7981b-nradio-c8-688.dts" "$GITHUB_WORKSPACE/mt7981b-nradio-c8-668gl.dts" "$GITHUB_WORKSPACE/c8-688.dts"; do
+    if [ -f "$DTS_SRC" ]; then
+        echo "Found custom DTS: $DTS_SRC, overwriting target..."
+        cp -f "$DTS_SRC" "$DTS_TARGET"
+        cp -f "$DTS_SRC" "target/linux/mediatek/files-6.12/arch/arm64/boot/dts/mediatek/mt7981b-nradio-c8-688.dts" 2>/dev/null || true
+        break
+    fi
+done
+
+# 根治 mt7981.dtsi 缺失并锁定副系统 rootfs_2nd
+find target/linux/mediatek/ -name "*.dts*" | while read -r dts_file; do
+    sed -i 's/\r$//' "$dts_file"
+    sed -i 's/"mt7981\.dtsi"/"mt7981b\.dtsi"/g' "$dts_file"
+    if grep -q "root=PARTLABEL=rootfs" "$dts_file"; then
+        sed -i 's/root=PARTLABEL=rootfs/root=PARTLABEL=rootfs_2nd/g' "$dts_file"
+    fi
+done
 
 # 3. 【核心双系统适配 2】Hook sysupgrade 升级逻辑，防止一键升级覆盖主系统 (System A)
 mkdir -p package/base-files/files/etc/uci-defaults
@@ -136,7 +165,7 @@ case "$1" in
         send_at "AT^FREQLOCK=1,$2,$3"
         ;;
     unlock)
-        echo "正在解除频段与小区锁定，恢复自动驻网..."
+        echo "正在解除频段与小区锁定，恢复自动搜网..."
         send_at 'AT^FREQLOCK=0'
         ;;
     *)
