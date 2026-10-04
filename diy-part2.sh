@@ -1,37 +1,59 @@
 #!/bin/bash
 # -----------------------------------------------------------------------------
 # DIY script 2: Executed after feeds update & install, before make defconfig
-# 针对 NRadio C8-688 (MT7981B) 深度定制：
-# 1. 默认 IP 调整为 192.168.66.1
-# 2. 移除 Makefile 中的废弃 kmod-usb2 依赖
-# 3. 首次开机自动动态撑满 8GB eMMC (自动扩容 /overlay)
-# 4. 双系统物理安全防护：sysupgrade 锁死 mmcblk0p8 / mmcblk0p9
-# 5. LuCI WebUI 双系统平滑切换面板
-# 6. 为 MT5700M 创建独立“蜂窝网络”顶层菜单并绑定 /dev/ttyUSB1
-# 7. 保持风扇温控插件在原生菜单位置
-# 8. 预配置 AutoUpdate 在线一键更新绑定当前 GitHub 仓库
+# 全面适配 25.x / master 分支
 # -----------------------------------------------------------------------------
 
-# 1. 修改默认 LAN IP 为 192.168.66.1
+[ -d "openwrt" ] && cd openwrt
+
+# 1. 注册 nradio_c8-688 编译目标与 1GB RAM 设备树 (DTS)
+FILOGIC_MK="target/linux/mediatek/image/filogic.mk"
+
+# 动态定位 upstream c8-668 设备树
+SRC_668_DTS=$(find target/linux/mediatek/ -name "*c8-668*.dts*" | head -n 1)
+
+if [ -n "$SRC_668_DTS" ] && [ -f "$SRC_668_DTS" ]; then
+    TARGET_DTS_DIR="$(dirname "$SRC_668_DTS")"
+    echo "Found upstream C8-668 DTS at: $SRC_668_DTS"
+    cp -f "$SRC_668_DTS" "$TARGET_DTS_DIR/mt7981b-nradio-c8-688.dts"
+    # 将 512MB 物理内存扩充为 1GB (0x40000000 长度)
+    sed -i 's/<0x40000000 0x20000000>/<0x40000000 0x40000000>/g' "$TARGET_DTS_DIR/mt7981b-nradio-c8-688.dts"
+    sed -i 's/c8-668/c8-688/g' "$TARGET_DTS_DIR/mt7981b-nradio-c8-688.dts"
+fi
+
+if [ -f "$FILOGIC_MK" ] && ! grep -q "nradio_c8-688" "$FILOGIC_MK"; then
+    echo "Injecting Device/nradio_c8-688 into filogic.mk..."
+    cat << 'EOF' >> "$FILOGIC_MK"
+
+define Device/nradio_c8-688
+  DEVICE_VENDOR := NRadio
+  DEVICE_MODEL := C8-688
+  DEVICE_DTS := mt7981b-nradio-c8-688
+  DEVICE_DTS_DIR := $(DTS_DIR)/mediatek
+  SUPPORTED_DEVICES := nradio,c8-688 nradio,c8-668
+  DEVICE_PACKAGES := kmod-mt7981-firmware kmod-usb-net-cdc-ether kmod-usb-net-rndis kmod-usb-serial-option
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += nradio_c8-688
+EOF
+fi
+
+# 2. 修改默认 LAN IP 为 192.168.66.1
 sed -i 's/192.168.1.1/192.168.66.1/g' package/base-files/files/bin/config_generate
 
-# 2. 清理所有拉取 feeds 中的淘汰 kmod-usb2 依赖
+# 3. 清理已废弃的 kmod-usb2 依赖
 find package/ feeds/ -name "Makefile" -o -name "*.mk" | xargs sed -i 's/+kmod-usb2//g' 2>/dev/null || true
 
-# 3. 创建系统底层目录结构
+# 4. 创建系统底层目录
 mkdir -p package/base-files/files/etc/uci-defaults
 mkdir -p package/base-files/files/lib/upgrade
 mkdir -p package/base-files/files/usr/lib/lua/luci/controller
 
-# -----------------------------------------------------------------------------
-# 4. 首次开机自适应扩展 8GB eMMC 分区空间（动态吃满 mmcblk0p9 剩余容量）
-# -----------------------------------------------------------------------------
+# 5. 首次开机自适应扩展 8GB eMMC 分区空间 (/overlay 撑满)
 cat << 'EOF' > package/base-files/files/etc/uci-defaults/96-expand-overlay
 #!/bin/sh
 if [ ! -f /etc/expanded_overlay_done ]; then
-    # 让内核重新扫描并确认 mmcblk0 真实硬件扇区
     partx -u /dev/mmcblk0 2>/dev/null || true
-    # 针对 f2fs 文件系统无损在线扩容，释放 6GB+ 空间给 /overlay
     resize.f2fs /dev/mmcblk0p9 2>/dev/null || true
     touch /etc/expanded_overlay_done
 fi
@@ -39,12 +61,9 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/96-expand-overlay
 
-# -----------------------------------------------------------------------------
-# 5. 配置 AutoUpdate 在线一键更新绑定当前 GitHub 仓库
-# -----------------------------------------------------------------------------
+# 6. 配置 AutoUpdate 绑定当前仓库
 cat << 'EOF' > package/base-files/files/etc/uci-defaults/97-autoupdate-custom
 #!/bin/sh
-# 预写入 GitHub Release 仓库路径，实现后台一键无感检测与 OTA 升级
 uci -q batch << EOU
 set autoupdate.main=autoupdate
 set autoupdate.main.github='AA9skillz-BN/nradio-c8-688-25.x'
@@ -55,9 +74,7 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/97-autoupdate-custom
 
-# -----------------------------------------------------------------------------
-# 6. 注入防冲刷升级保护：无论何种升级，坚决写入 Slot B，绝不污染原厂 Slot A
-# -----------------------------------------------------------------------------
+# 7. 升级脚本：锁死写入 Slot B (mmcblk0p8 / mmcblk0p9)
 cat << 'EOF' > package/base-files/files/lib/upgrade/platform.sh
 #!/bin/sh
 RAMFS_COPY_BIN="${RAMFS_COPY_BIN} /usr/sbin/fw_printenv /usr/sbin/fw_setenv"
@@ -71,28 +88,19 @@ platform_do_upgrade() {
     local board_dir=$(tar -tf "$tar_file" | grep -m 1 '^sysupgrade-.*/$')
     board_dir="${board_dir%/}"
 
-    echo "=== NRadio C8-688 DualBoot Safe Upgrade ==="
-    echo "Targeting Secondary Slot: mmcblk0p8 (Kernel) & mmcblk0p9 (RootFS)..."
-
-    # 提取并写入内核到 Slot B
+    echo "=== Upgrading Slot B (mmcblk0p8 & mmcblk0p9) ==="
     tar -xf "$tar_file" "${board_dir}/kernel" -O > /dev/mmcblk0p8
-    # 提取并写入根文件系统到 Slot B
     tar -xf "$tar_file" "${board_dir}/rootfs" -O > /dev/mmcblk0p9
 
-    # 确保 U-Boot 引导指向 Slot B
     if command -v fw_setenv >/dev/null 2>&1; then
         fw_setenv boot_part 2 2>/dev/null || true
     fi
-
-    echo "Upgrade completed successfully. Rebooting to Slot B..."
     sync
 }
 EOF
 chmod +x package/base-files/files/lib/upgrade/platform.sh
 
-# -----------------------------------------------------------------------------
-# 7. 创建“系统” -> “双系统切换”图形化控制模块
-# -----------------------------------------------------------------------------
+# 8. Web 端双系统切换面板
 cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/controller/dualboot.lua
 module("luci.controller.dualboot", package.seeall)
 
@@ -142,9 +150,7 @@ function action_switch()
 end
 EOF
 
-# -----------------------------------------------------------------------------
-# 8. 为 MT5700M 创建专属顶层大分类：“蜂窝网络”（风扇保持原位不移动）
-# -----------------------------------------------------------------------------
+# 9. 创建“蜂窝网络”顶层分类并配置 MT5700M 模组
 cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/controller/cellular.lua
 module("luci.controller.cellular", package.seeall)
 
@@ -153,14 +159,11 @@ function index()
 end
 EOF
 
-# 克隆带 WebUI 的 MT5700M 模组管理面板 (FAN789 优化版)
 if [ ! -d "package/luci-app-mt5700m" ]; then
     git clone --depth=1 https://github.com/FAN789/luci-app-mt5700m.git package/luci-app-mt5700m 2>/dev/null || true
 fi
 
-# 将 MT5700M 挂载到“蜂窝网络”顶层分类下，并绑定通信端口为 /dev/ttyUSB1
 if [ -d "package/luci-app-mt5700m" ]; then
-    echo "Configuring MT5700M for Cellular menu and ttyUSB1..."
     find package/luci-app-mt5700m -type f -name "*.lua" | while read -r f; do
         sed -i 's/entry({"admin", "modem"/entry({"admin", "cellular"/g' "$f" 2>/dev/null || true
         sed -i 's/entry({"admin", "network", "mt5700m"/entry({"admin", "cellular", "mt5700m"/g' "$f" 2>/dev/null || true
@@ -171,9 +174,7 @@ if [ -d "package/luci-app-mt5700m" ]; then
     done
 fi
 
-# -----------------------------------------------------------------------------
-# 9. 拉取智能温控风扇插件（保持原位，放置在默认服务/状态菜单）
-# -----------------------------------------------------------------------------
+# 10. 拉取风扇温控插件
 if [ ! -d "package/luci-app-h5000m-fancontrol" ]; then
     git clone --depth=1 https://github.com/FAN789/luci-app-h5000m-fancontrol.git package/luci-app-h5000m-fancontrol 2>/dev/null || true
 fi
