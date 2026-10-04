@@ -183,7 +183,12 @@ fi
 # -----------------------------------------------------------------------------
 echo "Injecting NRadio C8-688 device support dynamically..."
 
-# (1) 自动寻找当前上游 mediatek 平台使用的所有内核 files 目录 (例如 files-6.6, files-6.12 等)
+# -----------------------------------------------------------------------------
+# 10. 自动适配上游内核并注入 NRadio C8-688 设备支持
+# -----------------------------------------------------------------------------
+echo "Injecting NRadio C8-688 device support dynamically..."
+
+# (1) 自动寻找当前上游 mediatek 平台使用的所有内核 files 目录
 for files_dir in target/linux/mediatek/files-*; do
     if [ -d "$files_dir" ]; then
         # 确保对应内核版本的 DTS 目录存在，并将设备树复制进去
@@ -200,7 +205,6 @@ define Device/nradio_c8-688
   DEVICE_VENDOR := NRadio
   DEVICE_MODEL := C8-688
   DEVICE_DTS := mt7981b-nradio-c8-688
-  DEVICE_DTS_DIR := $$(DTS_DIR)/mediatek
   SUPPORTED_DEVICES := nradio,c8-688
   DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware
   
@@ -210,3 +214,5 @@ define Device/nradio_c8-688
 endef
 TARGET_DEVICES += nradio_c8-688
 EOF
+
+exit 0
