@@ -65,3 +65,56 @@ cat << 'EOF' > README.md
     ├── 🔄 双系统切换 (DualBoot) ── 一键在 Slot A 原厂与 Slot B 之间切换
     ├── 🚀 在线更新 (AutoUpdate) ── 一键检测 GitHub Release 并静默升级
     └── 🎨 Argon 配置 ─────────── 登录壁纸与外观定制
+
+🛠️ 初次刷入指南 (从原厂系统刷入副系统)
+1. 下载并上传固件
+从 Releases 页面下载最新的 immortalwrt-mediatek-filogic-nradio_c8-688-squashfs-sysupgrade.bin 固件，并通过 SCP 上传到设备的 /tmp 目录：
+
+Bash
+scp immortalwrt-*-sysupgrade.bin root@192.168.66.1:/tmp/sysupgrade.bin
+2. SSH 登录设备执行写入
+Bash
+ssh root@192.168.66.1
+
+# 进入临时目录解压并刷入副系统专属分区
+cd /tmp
+tar -xf sysupgrade.bin
+
+# 写入内核到 mmcblk0p8 (Slot B 内核分区)
+dd if=$(find sysupgrade-*/ -name "kernel") of=/dev/mmcblk0p8 bs=4M conv=fsync
+
+# 写入根文件系统到 mmcblk0p9 (Slot B 根文件系统)
+dd if=$(find sysupgrade-*/ -name "rootfs") of=/dev/mmcblk0p9 bs=4M conv=fsync
+
+# 设置 U-Boot 引导参数为副系统
+fw_setenv boot_part 2
+
+# 重启设备
+sync && reboot
+3. 开机验证存储空间
+重启后登录 ImmortalWrt 后台（192.168.66.1），在终端执行：
+
+Bash
+df -h /overlay
+若 Size 显示为 5.5G - 6.5G 左右，说明 8GB eMMC 空间已自适应扩容完成！
+
+🔄 日常升级说明
+后续升级无需再连终端敲命令：
+
+直接在 LuCI 网页后台点击 「系统」 -> 「在线更新」。
+
+点击 「检查更新」，系统会自动对比本仓库 Releases 的最新固件。
+
+点击 「立即更新」，固件自动下载并安全烧写至副系统 Slot B，重启即用。
+
+🤝 鸣谢与致敬
+ImmortalWrt Project
+
+FAN789/luci-app-mt5700m
+
+FAN789/luci-app-h5000m-fancontrol
+
+Hyy2001X/luci-app-autoupdate
+
+jerrykuku/luci-theme-argon
+EOF
