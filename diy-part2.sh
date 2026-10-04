@@ -1,6 +1,6 @@
 #!/bin/bash
 # --------------------------------------------------------
-# DIY script 2: Executed after feeds update & install
+# DIY script 2: NRadio C8-688 满血性能与双系统锁定注入
 # --------------------------------------------------------
 
 cd openwrt || true
@@ -53,7 +53,7 @@ find target/linux/mediatek/ -name "*.dts*" | while read -r dts_file; do
     fi
 done
 
-# 3. 【核心双系统适配 2】Hook sysupgrade 升级逻辑，防止一键升级覆盖主系统 (System A)
+# 3. 【核心双系统适配】Hook sysupgrade 升级逻辑，防止一键升级覆盖主系统
 mkdir -p package/base-files/files/etc/uci-defaults
 cat << 'EOF' > package/base-files/files/etc/uci-defaults/90-dualboot-protect
 #!/bin/sh
@@ -64,7 +64,7 @@ fi
 exit 0
 EOF
 
-# 4. 【核心双系统适配 3】注入双系统槽位快速切换工具
+# 4. 注入双系统槽位快速切换工具
 mkdir -p package/base-files/files/usr/bin
 cat << 'EOF' > package/base-files/files/usr/bin/switch-system
 #!/bin/sh
@@ -91,11 +91,54 @@ chmod +x package/base-files/files/usr/bin/switch-system
 # 5. 锁定管理后台 IP 为 192.168.66.1
 sed -i 's/192.168.1.1/192.168.66.1/g' package/base-files/files/bin/config_generate
 
-# 6. 【核心网络加速预设】默认启用 Turbo ACC 硬件 PPE 加速与 FullCone
+# 6. 【满血 Wi-Fi 射频调优】预设 160MHz、满血功率、专属 SSID
+cat << 'EOF' > package/base-files/files/etc/uci-defaults/98-fullpower-wifi
+#!/bin/sh
+# 遍历配置无线设备
+for radio in $(uci -q show wireless | grep '=wifi-device' | cut -d'.' -f2 | cut -d'=' -f1); do
+    uci -q set wireless.${radio}.disabled='0'
+    uci -q set wireless.${radio}.country='CN'
+    
+    band=$(uci -q get wireless.${radio}.band 2>/dev/null || echo "")
+    htmode=$(uci -q get wireless.${radio}.htmode 2>/dev/null || echo "")
+    iface=$(uci -q show wireless | grep "device='${radio}'" | cut -d'.' -f2 | head -n 1)
+
+    if [ "$band" = "5g" ] || [ "$band" = "6g" ] || echo "$htmode" | grep -q "HE80\|HE160\|VHT80"; then
+        # 5G 射频开启 160MHz 频宽与最大发射功率
+        uci -q set wireless.${radio}.channel='36'
+        uci -q set wireless.${radio}.htmode='HE160'
+        if [ -n "$iface" ]; then
+            uci -q set wireless.${iface}.ssid='NRadio-C8-688-5G'
+            uci -q set wireless.${iface}.encryption='none'
+        fi
+    else
+        # 2.4G 射频开启 40MHz 频宽
+        uci -q set wireless.${radio}.channel='auto'
+        uci -q set wireless.${radio}.htmode='HE40'
+        if [ -n "$iface" ]; then
+            uci -q set wireless.${iface}.ssid='NRadio-C8-688-2.4G'
+            uci -q set wireless.${iface}.encryption='none'
+        fi
+    fi
+done
+
+# 兼容 MTK 原厂无线驱动文件
+if [ -f /etc/config/wireless ]; then
+    sed -i 's/SSID1=.*$/SSID1=NRadio-C8-688-2.4G/g' /etc/config/wireless 2>/dev/null || true
+    sed -i 's/SSID2=.*$/SSID2=NRadio-C8-688-5G/g' /etc/config/wireless 2>/dev/null || true
+    sed -i 's/HtBw=.*$/HtBw=1/g' /etc/config/wireless 2>/dev/null || true
+    sed -i 's/VhtBw=.*$/VhtBw=2/g' /etc/config/wireless 2>/dev/null || true
+fi
+
+uci commit wireless
+exit 0
+EOF
+
+# 7. 【满血网络加速预设】PPE 硬件转发 + FullCone + BBR 拥塞控制
 cat << 'EOF' > package/base-files/files/etc/uci-defaults/95-turboacc-default
 #!/bin/sh
 uci -q batch << EOU
-set turboacc.config.sw_flow='1'
+set turboacc.config.sw_flow='0'
 set turboacc.config.hw_flow='1'
 set turboacc.config.fullcone_nat='1'
 set turboacc.config.bbr_cca='1'
@@ -104,21 +147,30 @@ EOU
 exit 0
 EOF
 
-# 7. 【核心依赖根治】全量抹除 kmod-usb2 避免 25.x apk 依赖校验失败
+# 8. 【满血网络栈与 5G 缓冲区调优】
+cat << 'EOF' >> package/base-files/files/etc/sysctl.conf
+# 核心队列与拥塞控制
+net.core.default_qdisc=fq
+net.ipv4.tcp_congestion_control=bbr
+
+# 提升 5G 高吞吐发包队列深度，消除软中断瓶颈
+net.core.netdev_max_backlog=16384
+net.core.rmem_max=16777216
+net.core.wmem_max=16777216
+net.ipv4.tcp_rmem=4096 87380 16777216
+net.ipv4.tcp_wmem=4096 65536 16777216
+EOF
+
+# 9. 清理 kmod-usb2 避免构建校验阻断
 find package/ feeds/ -type f -name "Makefile" -exec sed -i 's/+kmod-usb2//g' {} + 2>/dev/null || true
 find package/ feeds/ -type f -name "*.mk" -exec sed -i 's/+kmod-usb2//g' {} + 2>/dev/null || true
 sed -i '/CONFIG_PACKAGE_kmod-usb2/d' .config 2>/dev/null || true
 
-# 8. 默认主题设置为 Argon (iStoreOS 现代视觉风格)
+# 10. 默认主题 Argon 与时区设置
 sed -i 's/luci-theme-bootstrap/luci-theme-argon/g' feeds/luci/collections/luci/Makefile 2>/dev/null || true
-
-# 9. 预设时区为上海 (CST-8)
 sed -i "s/'UTC'/'CST-8'\n\t\tset system.@system[-1].zonename='Asia\/Shanghai'/g" package/base-files/files/bin/config_generate
 
-# 10. 预设开启 TCP BBR 拥塞控制
-sed -i -e '$a net.core.default_qdisc=fq' -e '$a net.ipv4.tcp_congestion_control=bbr' package/base-files/files/etc/sysctl.conf
-
-# 11. 绑定你的 GitHub 仓库用于后台一键 OTA 更新 (AA9skillz-BN/nradio-c8-688-25.x)
+# 11. 绑定 GitHub 仓库在线 OTA
 mkdir -p package/custom/luci-app-autoupdate/root/etc/uci-defaults
 cat << 'EOF' > package/custom/luci-app-autoupdate/root/etc/uci-defaults/99-autoupdate
 uci -q batch << EOU
@@ -129,11 +181,10 @@ EOU
 exit 0
 EOF
 
-# 12. 注入当前固件构建版本号标识
 CURRENT_VER=$(date +%Y.%m.%d)
 echo "$CURRENT_VER" > package/base-files/files/etc/openwrt_version
 
-# 13. 注入 MT5700M 蜂窝管理工具集 (测邻区/读速率/查5QI/锁小区)
+# 12. 注入 MT5700M 5G 诊断与锁网工具 cpe-tool
 cat << 'EOF' > package/base-files/files/usr/bin/cpe-tool
 #!/bin/sh
 PORT=$(ls /dev/ttyUSB* /dev/cdc-wdm* 2>/dev/null | grep -E 'USB1|USB2|wdm0' | head -n 1)
