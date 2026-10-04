@@ -44,7 +44,7 @@
 ---
 
 ## 🤝 致谢与鸣谢
-ImmortalWrt Project
+**ImmortalWrt Project**
 
 **FAN789/luci-app-mt5700m**
 
