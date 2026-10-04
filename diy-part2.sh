@@ -203,8 +203,10 @@ define Device/nradio_c8-688
   DEVICE_DTS_DIR := $$(DTS_DIR)/mediatek
   SUPPORTED_DEVICES := nradio,c8-688
   DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware
+  
+  # 覆盖上游默认规则，彻底抛弃 .itb，仅生成适配双系统脚本的 sysupgrade.bin (Tarball)
+  IMAGES := sysupgrade.bin
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
 endef
 TARGET_DEVICES += nradio_c8-688
 EOF
-
-exit 0
