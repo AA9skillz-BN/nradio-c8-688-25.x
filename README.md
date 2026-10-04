@@ -40,3 +40,16 @@
   - 🔄 **双系统切换 (DualBoot)**：一键在 Slot A 原厂与 Slot B 之间切换引导
   - 🚀 **在线更新 (AutoUpdate)**：一键检测 GitHub Release 最新版本并静默刷入
   - 🎨 **Argon 配置**：登录壁纸与外观定制
+ 
+---
+
+## 🤝 致谢与鸣谢
+ImmortalWrt Project
+
+FAN789/luci-app-mt5700m
+
+FAN789/luci-app-h5000m-fancontrol
+
+Hyy2001X/luci-app-autoupdate
+
+jerrykuku/luci-theme-argon
