@@ -363,4 +363,26 @@ if [ -d "$MT5700_PKG" ]; then
     done
 fi
 
+# 15. 创建顶层“蜂窝网络”大分类，仅收纳 MT5700M 模组面板
+mkdir -p package/base-files/files/usr/lib/lua/luci/controller
+cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/controller/cellular.lua
+module("luci.controller.cellular", package.seeall)
+
+function index()
+    -- 创建一级顶级菜单分类：蜂窝网络 (排序权重 25，位于状态概况之后)
+    entry({"admin", "cellular"}, firstchild(), _("蜂窝网络"), 25).dependent = false
+end
+EOF
+
+# 仅将 MT5700M WebUI 重定向至“蜂窝网络”大分类下
+MT5700_PKG="package/luci-app-mt5700m"
+if [ -d "$MT5700_PKG" ]; then
+    echo "Relocating MT5700M to Cellular category..."
+    find "$MT5700_PKG" -type f -name "*.lua" | while read -r f; do
+        sed -i 's/entry({"admin", "modem"/entry({"admin", "cellular"/g' "$f" 2>/dev/null || true
+        sed -i 's/entry({"admin", "network", "mt5700m"/entry({"admin", "cellular", "mt5700m"/g' "$f" 2>/dev/null || true
+        sed -i 's/entry({"admin", "network", "mt5700"/entry({"admin", "cellular", "mt5700"/g' "$f" 2>/dev/null || true
+    done
+fi
+
 exit 0
