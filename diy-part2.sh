@@ -1,388 +1,181 @@
 #!/bin/bash
-# =================================================================
-# DIY Script Part 2 (After Update feeds)
-# Target: NRadio C8-688 (MediaTek MT7981B / Filogic 820)
-# =================================================================
+# -----------------------------------------------------------------------------
+# DIY script 2: Executed after feeds update & install, before make defconfig
+# 针对 NRadio C8-688 (MT7981B) 深度定制：
+# 1. 默认 IP 调整为 192.168.66.1
+# 2. 移除 Makefile 中的废弃 kmod-usb2 依赖
+# 3. 首次开机自动动态撑满 8GB eMMC (自动扩容 /overlay)
+# 4. 双系统物理安全防护：sysupgrade 锁死 mmcblk0p8 / mmcblk0p9
+# 5. LuCI WebUI 双系统平滑切换面板
+# 6. 为 MT5700M 创建独立“蜂窝网络”顶层菜单并绑定 /dev/ttyUSB1
+# 7. 保持风扇温控插件在原生菜单位置
+# 8. 预配置 AutoUpdate 在线一键更新绑定当前 GitHub 仓库
+# -----------------------------------------------------------------------------
 
-# 1. 修正默认 IP 为 192.168.66.1
+# 1. 修改默认 LAN IP 为 192.168.66.1
 sed -i 's/192.168.1.1/192.168.66.1/g' package/base-files/files/bin/config_generate
 
-# 2. 注入设备定义到 filogic.mk
-FILOGIC_MK="target/linux/mediatek/image/filogic.mk"
-if [ -f "$FILOGIC_MK" ]; then
-    if ! grep -q "define Device/nradio_c8-688" "$FILOGIC_MK"; then
-        echo "Injecting Device/nradio_c8-688 to filogic.mk..."
-        cat << 'EOF' >> "$FILOGIC_MK"
+# 2. 清理所有拉取 feeds 中的淘汰 kmod-usb2 依赖
+find package/ feeds/ -name "Makefile" -o -name "*.mk" | xargs sed -i 's/+kmod-usb2//g' 2>/dev/null || true
 
-define Device/nradio_c8-688
-  DEVICE_VENDOR := NRadio
-  DEVICE_MODEL := C8-688
-  DEVICE_DTS := mt7981b-nradio-c8-688
-  DEVICE_DTS_DIR := $(DTS_DIR)/mediatek
-  SUPPORTED_DEVICES := nradio,c8-688
-  UBIFS_OPTS := -m 2048 -e 124KiB -c 4096
-  IMAGE_SIZE := 65536k
-  IMAGES += sysupgrade.bin
-  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
-endef
-TARGET_DEVICES += nradio_c8-688
-EOF
-    fi
-fi
-
-# 3. 部署双系统升级与启动分区保护钩子
+# 3. 创建系统底层目录结构
+mkdir -p package/base-files/files/etc/uci-defaults
 mkdir -p package/base-files/files/lib/upgrade
+mkdir -p package/base-files/files/usr/lib/lua/luci/controller
+
+# -----------------------------------------------------------------------------
+# 4. 首次开机自适应扩展 8GB eMMC 分区空间（动态吃满 mmcblk0p9 剩余容量）
+# -----------------------------------------------------------------------------
+cat << 'EOF' > package/base-files/files/etc/uci-defaults/96-expand-overlay
+#!/bin/sh
+if [ ! -f /etc/expanded_overlay_done ]; then
+    # 让内核重新扫描并确认 mmcblk0 真实硬件扇区
+    partx -u /dev/mmcblk0 2>/dev/null || true
+    # 针对 f2fs 文件系统无损在线扩容，释放 6GB+ 空间给 /overlay
+    resize.f2fs /dev/mmcblk0p9 2>/dev/null || true
+    touch /etc/expanded_overlay_done
+fi
+exit 0
+EOF
+chmod +x package/base-files/files/etc/uci-defaults/96-expand-overlay
+
+# -----------------------------------------------------------------------------
+# 5. 配置 AutoUpdate 在线一键更新绑定当前 GitHub 仓库
+# -----------------------------------------------------------------------------
+cat << 'EOF' > package/base-files/files/etc/uci-defaults/97-autoupdate-custom
+#!/bin/sh
+# 预写入 GitHub Release 仓库路径，实现后台一键无感检测与 OTA 升级
+uci -q batch << EOU
+set autoupdate.main=autoupdate
+set autoupdate.main.github='AA9skillz-BN/nradio-c8-688-25.x'
+set autoupdate.main.cloud='GitHub'
+commit autoupdate
+EOU
+exit 0
+EOF
+chmod +x package/base-files/files/etc/uci-defaults/97-autoupdate-custom
+
+# -----------------------------------------------------------------------------
+# 6. 注入防冲刷升级保护：无论何种升级，坚决写入 Slot B，绝不污染原厂 Slot A
+# -----------------------------------------------------------------------------
 cat << 'EOF' > package/base-files/files/lib/upgrade/platform.sh
 #!/bin/sh
-RAMFS_COPY_BIN='fw_printenv fw_setenv'
+RAMFS_COPY_BIN="${RAMFS_COPY_BIN} /usr/sbin/fw_printenv /usr/sbin/fw_setenv"
 
 platform_check_image() {
-	return 0
+    return 0
 }
 
 platform_do_upgrade() {
-	local diskdev="$(partx -s /dev/mmcblk0 2>/dev/null)"
-	local rootfs_part="/dev/mmcblk0p9"
-	local kernel_part="/dev/mmcblk0p8"
+    local tar_file="$1"
+    local board_dir=$(tar -tf "$tar_file" | grep -m 1 '^sysupgrade-.*/$')
+    board_dir="${board_dir%/}"
 
-	echo "Upgrading ImmortalWrt on Slot B (rootfs_2nd)..."
-	tar -xzOf "$1" sysupgrade-nradio_c8-688/kernel | dd of="$kernel_part" bs=4M conv=fsync 2>/dev/null
-	tar -xzOf "$1" sysupgrade-nradio_c8-688/root | dd of="$rootfs_part" bs=4M conv=fsync 2>/dev/null
+    echo "=== NRadio C8-688 DualBoot Safe Upgrade ==="
+    echo "Targeting Secondary Slot: mmcblk0p8 (Kernel) & mmcblk0p9 (RootFS)..."
 
-	# 确保 U-Boot 引导指向副系统 Slot B
-	fw_setenv boot_system 1 2>/dev/null || true
-	fw_setenv active_slot 1 2>/dev/null || true
-	return 0
+    # 提取并写入内核到 Slot B
+    tar -xf "$tar_file" "${board_dir}/kernel" -O > /dev/mmcblk0p8
+    # 提取并写入根文件系统到 Slot B
+    tar -xf "$tar_file" "${board_dir}/rootfs" -O > /dev/mmcblk0p9
+
+    # 确保 U-Boot 引导指向 Slot B
+    if command -v fw_setenv >/dev/null 2>&1; then
+        fw_setenv boot_part 2 2>/dev/null || true
+    fi
+
+    echo "Upgrade completed successfully. Rebooting to Slot B..."
+    sync
 }
 EOF
 chmod +x package/base-files/files/lib/upgrade/platform.sh
 
-# 4. 植入双系统切换命令行工具 (switch-system)
-mkdir -p package/base-files/files/usr/sbin
-cat << 'EOF' > package/base-files/files/usr/sbin/switch-system
-#!/bin/sh
-
-show_usage() {
-    echo "=========================================="
-    echo "       NRadio C8-688 双系统切换工具       "
-    echo "=========================================="
-    echo "用法: switch-system [a|b]"
-    echo "  a : 切换为引导原厂主系统 (Slot A)"
-    echo "  b : 切换为引导 ImmortalWrt 副系统 (Slot B)"
-    echo "=========================================="
-}
-
-case "$1" in
-    a|A)
-        echo "[*] 正在设置 U-Boot 引导槽位为 系统 A (原厂)..."
-        fw_setenv boot_system 0 2>/dev/null || true
-        fw_setenv active_slot 0 2>/dev/null || true
-        fw_setenv boot_slot a 2>/dev/null || true
-        echo "[+] 设置完成！输入 reboot 重启即可进入原厂系统。"
-        ;;
-    b|B)
-        echo "[*] 正在设置 U-Boot 引导槽位为 系统 B (ImmortalWrt)..."
-        fw_setenv boot_system 1 2>/dev/null || true
-        fw_setenv active_slot 1 2>/dev/null || true
-        fw_setenv boot_slot b 2>/dev/null || true
-        echo "[+] 设置完成！输入 reboot 重启即可进入副系统。"
-        ;;
-    *)
-        show_usage
-        exit 1
-        ;;
-esac
-EOF
-chmod +x package/base-files/files/usr/sbin/switch-system
-
-# 5. 5G 模块 (MT5700M / T750) 锁频锁网工具 (cpe-tool)
-cat << 'EOF' > package/base-files/files/usr/sbin/cpe-tool
-#!/bin/sh
-TTY_DEV=""
-for dev in /dev/ttyUSB1 /dev/ttyUSB2 /dev/ttyUSB0 /dev/cdc-wdm0; do
-    if [ -e "$dev" ]; then
-        TTY_DEV="$dev"
-        break
-    fi
-done
-
-if [ -z "$TTY_DEV" ]; then
-    echo "[-] 错误: 未检测到 5G 模块 AT 控制端口！"
-    exit 1
-fi
-
-send_at() {
-    local cmd="$1"
-    echo -e "${cmd}\r\n" > "$TTY_DEV"
-    timeout 2 cat "$TTY_DEV" | tr -d '\r'
-}
-
-case "$1" in
-    info)
-        echo "=== 模组型号与固件版本 ==="
-        send_at "ATI"
-        echo "=== 信号质量 (CSQ) ==="
-        send_at "AT+CSQ"
-        ;;
-    sim)
-        echo "=== SIM 卡就绪检测 ==="
-        send_at "AT+CPIN?"
-        ;;
-    band)
-        echo "=== 当前驻网频段与小区信息 ==="
-        send_at "AT+CEREG?"
-        ;;
-    send)
-        [ -n "$2" ] && send_at "$2" || echo "用法: cpe-tool send \"AT命令\""
-        ;;
-    *)
-        echo "NRadio C8-688 5G 控制工具"
-        echo "用法: cpe-tool [info|sim|band|send <CMD>]"
-        ;;
-esac
-EOF
-chmod +x package/base-files/files/usr/sbin/cpe-tool
-
-# 6. 配置满血 Wi-Fi 6 (160MHz、信道 36、免密)
-mkdir -p package/base-files/files/etc/uci-defaults
-cat << 'EOF' > package/base-files/files/etc/uci-defaults/98-fullpower-wifi
-#!/bin/sh
-[ ! -f /etc/config/wireless ] && wifi config
-
-dev_2g=""
-dev_5g=""
-
-for dev in $(uci show wireless | grep "=wifi-device" | cut -d'.' -f2 | cut -d'=' -f1); do
-    band=$(uci -q get wireless.${dev}.band)
-    channel=$(uci -q get wireless.${dev}.channel)
-    htmode=$(uci -q get wireless.${dev}.htmode)
-
-    if [ "$band" = "5g" ] || [ "$channel" -gt 14 ] 2>/dev/null || echo "$htmode" | grep -qi "HE80\|HE160"; then
-        dev_5g="$dev"
-    else
-        dev_2g="$dev"
-    fi
-done
-
-[ -z "$dev_5g" ] && dev_5g="radio0"
-[ -z "$dev_2g" ] && dev_2g="radio1"
-
-# 5GHz 配置
-uci set wireless.${dev_5g}.disabled='0'
-uci set wireless.${dev_5g}.band='5g'
-uci set wireless.${dev_5g}.channel='36'
-uci set wireless.${dev_5g}.htmode='HE160'
-uci set wireless.${dev_5g}.country='CN'
-
-# 2.4GHz 配置
-uci set wireless.${dev_2g}.disabled='0'
-uci set wireless.${dev_2g}.band='2g'
-uci set wireless.${dev_2g}.channel='auto'
-uci set wireless.${dev_2g}.htmode='HE40'
-uci set wireless.${dev_2g}.country='CN'
-
-# 默认 SSID
-if uci get wireless.default_${dev_5g} >/dev/null 2>&1; then
-    uci set wireless.default_${dev_5g}.ssid='NRadio-C8-688-5G'
-    uci set wireless.default_${dev_5g}.encryption='none'
-fi
-
-if uci get wireless.default_${dev_2g} >/dev/null 2>&1; then
-    uci set wireless.default_${dev_2g}.ssid='NRadio-C8-688-2.4G'
-    uci set wireless.default_${dev_2g}.encryption='none'
-fi
-
-uci commit wireless
-exit 0
-EOF
-chmod +x package/base-files/files/etc/uci-defaults/98-fullpower-wifi
-
-# 7. 开启硬件 PPE 流控与基础网络调优
-cat << 'EOF' > package/base-files/files/etc/uci-defaults/99-network-tweaks
-#!/bin/sh
-uci set firewall.@defaults[0].flow_offloading='1'
-uci set firewall.@defaults[0].flow_offloading_hw='1'
-uci commit firewall
-
-# 调整最大连接数与内核 TCP 缓冲
-sysctl -w net.netfilter.nf_conntrack_max=131072 2>/dev/null
-exit 0
-EOF
-chmod +x package/base-files/files/etc/uci-defaults/99-network-tweaks
-
-# 8. 清理废弃的 kmod-usb2 强依赖，确保 apk 打包通畅
-find package/ feeds/ -name "Makefile" -o -name "*.mk" | xargs sed -i 's/+kmod-usb2//g' 2>/dev/null || true
-
-# 9. 自动检测并覆盖源码中的 DTS
-find target/linux/mediatek/dts/ -name "*mt7981*.dts*" | head -n 1 > /tmp/dts_path
-DTS_DIR="target/linux/mediatek/files-6.12/arch/arm64/boot/dts/mediatek"
-[ ! -d "$DTS_DIR" ] && DTS_DIR="target/linux/mediatek/files-6.6/arch/arm64/boot/dts/mediatek"
-mkdir -p "$DTS_DIR"
-for src_dts in "$GITHUB_WORKSPACE"/mt7981b-nradio-c8-688.dts ./mt7981b-nradio-c8-688.dts; do
-    if [ -f "$src_dts" ]; then
-        echo "Found custom DTS at: $src_dts -> copying to $DTS_DIR"
-        cp -f "$src_dts" "$DTS_DIR/mt7981b-nradio-c8-688.dts"
-        break
-    fi
-done
-
-# 10. 设置系统时区与中文语言
-cat << 'EOF' > package/base-files/files/etc/uci-defaults/97-system-init
-#!/bin/sh
-uci set system.@system[0].zonename='Asia/Shanghai'
-uci set system.@system[0].timezone='CST-8'
-uci commit system
-exit 0
-EOF
-chmod +x package/base-files/files/etc/uci-defaults/97-system-init
-
-# 11. 绑定一键在线 OTA 升级源
-mkdir -p package/base-files/files/etc/autoupdate
-cat << 'EOF' > package/base-files/files/etc/autoupdate/github.conf
-github_user="AA9skillz-BN"
-github_repo="nradio-c8-688-25.x"
-firmware_tag="immortalwrt-mediatek-filogic-nradio_c8-688-squashfs-sysupgrade.bin"
-EOF
-
-# 12. 注入 LuCI 图形化双系统切换页面
-LUCI_DUALBOOT_DIR="package/base-files/files/usr/lib/lua/luci"
-mkdir -p "$LUCI_DUALBOOT_DIR/controller"
-mkdir -p "$LUCI_DUALBOOT_DIR/view/dualboot"
-
-cat << 'EOF' > "$LUCI_DUALBOOT_DIR/controller/dualboot.lua"
+# -----------------------------------------------------------------------------
+# 7. 创建“系统” -> “双系统切换”图形化控制模块
+# -----------------------------------------------------------------------------
+cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/controller/dualboot.lua
 module("luci.controller.dualboot", package.seeall)
 
 function index()
-    if not nixio.fs.access("/etc/config/system") then
-        return
-    end
-    entry({"admin", "system", "dualboot"}, template("dualboot/index"), _("双系统切换"), 90).dependent = true
+    entry({"admin", "system", "dualboot"}, call("action_dualboot"), _("双系统切换"), 90).dependent = true
     entry({"admin", "system", "dualboot", "switch"}, call("action_switch")).leaf = true
 end
 
+function action_dualboot()
+    local cur_boot = luci.util.exec("fw_printenv boot_part 2>/dev/null | awk -F'=' '{print $2}'")
+    cur_boot = cur_boot and cur_boot:gsub("%s+", "") or "2"
+
+    local html = [[
+        <div class="cbi-map">
+            <h2>双系统引导管理 (NRadio C8-688)</h2>
+            <div class="cbi-map-descr">当前设备支持 A/B 双槽位无损切换。</div>
+            <fieldset class="cbi-section">
+                <legend>系统槽位状态</legend>
+                <table class="cbi-section-table">
+                    <tr class="cbi-section-table-row">
+                        <td><b>当前运行槽位：</b></td>
+                        <td style="color: green; font-weight: bold;">]] .. (cur_boot == "1" and "主系统 (Slot A / 原厂)" or "副系统 (Slot B / ImmortalWrt)") .. [[</td>
+                    </tr>
+                    <tr class="cbi-section-table-row">
+                        <td><b>操作：</b></td>
+                        <td>
+                            <button class="cbi-button cbi-button-apply" onclick="location.href=']] .. luci.dispatcher.build_url("admin", "system", "dualboot", "switch") .. [['">
+                                ]] .. (cur_boot == "1" and "切换到副系统 (Slot B)" or "一键切回原厂主系统 (Slot A)") .. [[
+                            </button>
+                        </td>
+                    </tr>
+                </table>
+            </fieldset>
+        </div>
+    ]]
+    luci.template.render_string(html)
+end
+
 function action_switch()
-    local http = require "luci.http"
-    local slot = http.formvalue("slot")
+    local cur_boot = luci.util.exec("fw_printenv boot_part 2>/dev/null | awk -F'=' '{print $2}'")
+    cur_boot = cur_boot and cur_boot:gsub("%s+", "") or "2"
+    local target = (cur_boot == "1") and "2" or "1"
     
-    if slot == "a" or slot == "b" then
-        os.execute("/usr/sbin/switch-system " .. slot)
-        http.prepare_content("application/json")
-        http.write_json({ status = "ok", target = slot })
-        os.execute("sleep 2 && reboot &")
-    else
-        http.prepare_content("application/json")
-        http.write_json({ status = "error", message = "Invalid slot" })
-    end
+    luci.util.exec("fw_setenv boot_part " .. target)
+    luci.http.redirect(luci.dispatcher.build_url("admin", "system", "dualboot"))
+    luci.util.exec("(sleep 2 && reboot) &")
 end
 EOF
 
-cat << 'EOF' > "$LUCI_DUALBOOT_DIR/view/dualboot/index.htm"
-<%+header%>
-<div class="cbi-map">
-    <h2 name="content"><%:NRadio C8-688 双系统槽位切换%></h2>
-    <div class="cbi-map-descr">
-        <%:当前设备支持 A/B 双系统安全引导。在此页面点击即可无损切换引导槽位，点击后路由器将自动保存 U-Boot 引导参数并重启。%>
-    </div>
-
-    <div class="cbi-section">
-        <legend><%:槽位操作%></legend>
-        <div class="cbi-section-node">
-            <table class="cbi-section-table" style="width: 100%; text-align: left;">
-                <tr class="cbi-section-table-row">
-                    <td style="padding: 15px; width: 60%;">
-                        <strong><%:原厂主系统 (Slot A)%></strong><br />
-                        <span style="color: #666;"><%:位于 mmcblk0p6 (kernel) 与 mmcblk0p7 (rootfs)，为出厂官方系统。%></span>
-                    </td>
-                    <td style="padding: 15px;">
-                        <button class="cbi-button cbi-button-reset" onclick="doSwitch('a')"><%:切回原厂主系统 A%></button>
-                    </td>
-                </tr>
-                <tr class="cbi-section-table-row">
-                    <td style="padding: 15px; width: 60%;">
-                        <strong><%:ImmortalWrt 副系统 (Slot B)%></strong><br />
-                        <span style="color: #666;"><%:位于 mmcblk0p8 (kernel_2nd) 与 mmcblk0p9 (rootfs_2nd)，即当前系统。%></span>
-                    </td>
-                    <td style="padding: 15px;">
-                        <button class="cbi-button cbi-button-apply" onclick="doSwitch('b')"><%:重启进入副系统 B%></button>
-                    </td>
-                </tr>
-            </table>
-        </div>
-    </div>
-</div>
-
-<script type="text/javascript">
-function doSwitch(slot) {
-    var slotName = (slot === 'a') ? '<%:原厂主系统 A%>' : '<%:ImmortalWrt 副系统 B%>';
-    if (!confirm('<%:确定要切换并立即重启进入 %> ' + slotName + ' <%: 吗？%>')) {
-        return;
-    }
-    
-    var btn = event.target;
-    btn.disabled = true;
-    btn.innerText = '<%:正在切换并准备重启...%>';
-
-    (new XHR()).post('<%=url("admin/system/dualboot/switch")%>', { slot: slot }, function(x, info) {
-        if (info && info.status === 'ok') {
-            alert('<%:引导已切换为 %> ' + slotName + '！<%: 路由器正在重启，约 60 秒后可尝试重新连接。%>');
-        } else {
-            alert('<%:切换失败，请检查系统日志。%>');
-            btn.disabled = false;
-        }
-    });
-}
-</script>
-<%+footer%>
-EOF
-
-# 13. 集成 FAN789 图形化 5G CPE 风扇控制插件并适配 C8-688 硬件
-rm -rf package/luci-app-h5000m-fancontrol
-git clone --depth 1 https://github.com/FAN789/luci-app-h5000m-fancontrol.git package/luci-app-h5000m-fancontrol
-
-FAN_PKG="package/luci-app-h5000m-fancontrol"
-if [ -d "$FAN_PKG" ]; then
-    echo "Patching luci-app-h5000m-fancontrol for C8-688 hardware..."
-    find "$FAN_PKG" -type f \( -name "*.sh" -o -name "*.lua" -o -name "fancontrol" \) | xargs sed -i 's/\/sys\/devices\/platform\/10048000.pwm\/pwm\/pwmchip0/\/sys\/devices\/platform\/pwm-fan\/hwmon\/hwmon0/g' 2>/dev/null || true
-    find "$FAN_PKG" -type f \( -name "*.sh" -o -name "*.lua" -o -name "fancontrol" \) | xargs sed -i 's/pwm0/pwm1/g' 2>/dev/null || true
-    find "$FAN_PKG" -type f -name "*fan*.sh" | while read -r f; do
-        sed -i '/echo.*>.*pwm/i \    [ -f /sys/class/gpio/fan-hw/value ] && echo 1 > /sys/class/gpio/fan-hw/value 2>/dev/null' "$f" 2>/dev/null || true
-    done
-fi
-
-# 14. 集成 MT5700M 专属 5G 模组 WebUI 控制面板并适配 C8-688 硬件
-rm -rf package/luci-app-mt5700m package/luci-app-mt5700
-if ! git clone --depth 1 https://github.com/FAN789/luci-app-mt5700m.git package/luci-app-mt5700m 2>/dev/null; then
-    git clone --depth 1 https://github.com/LianXia233/luci-app-mt5700.git package/luci-app-mt5700m 2>/dev/null || true
-fi
-
-MT5700_PKG="package/luci-app-mt5700m"
-if [ -d "$MT5700_PKG" ]; then
-    echo "Configuring MT5700M WebUI for C8-688..."
-    find "$MT5700_PKG" -type f \( -name "*.lua" -o -name "*.sh" -o -name "*config*" \) | while read -r f; do
-        sed -i 's/\/dev\/ttyUSB2/\/dev\/ttyUSB1/g' "$f" 2>/dev/null || true
-    done
-fi
-
-# 15. 创建顶层“蜂窝网络”大分类，仅收纳 MT5700M 模组面板
-mkdir -p package/base-files/files/usr/lib/lua/luci/controller
+# -----------------------------------------------------------------------------
+# 8. 为 MT5700M 创建专属顶层大分类：“蜂窝网络”（风扇保持原位不移动）
+# -----------------------------------------------------------------------------
 cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/controller/cellular.lua
 module("luci.controller.cellular", package.seeall)
 
 function index()
-    -- 创建一级顶级菜单分类：蜂窝网络 (排序权重 25，位于状态概况之后)
     entry({"admin", "cellular"}, firstchild(), _("蜂窝网络"), 25).dependent = false
 end
 EOF
 
-# 仅将 MT5700M WebUI 重定向至“蜂窝网络”大分类下
-MT5700_PKG="package/luci-app-mt5700m"
-if [ -d "$MT5700_PKG" ]; then
-    echo "Relocating MT5700M to Cellular category..."
-    find "$MT5700_PKG" -type f -name "*.lua" | while read -r f; do
+# 克隆带 WebUI 的 MT5700M 模组管理面板 (FAN789 优化版)
+if [ ! -d "package/luci-app-mt5700m" ]; then
+    git clone --depth=1 https://github.com/FAN789/luci-app-mt5700m.git package/luci-app-mt5700m 2>/dev/null || true
+fi
+
+# 将 MT5700M 挂载到“蜂窝网络”顶层分类下，并绑定通信端口为 /dev/ttyUSB1
+if [ -d "package/luci-app-mt5700m" ]; then
+    echo "Configuring MT5700M for Cellular menu and ttyUSB1..."
+    find package/luci-app-mt5700m -type f -name "*.lua" | while read -r f; do
         sed -i 's/entry({"admin", "modem"/entry({"admin", "cellular"/g' "$f" 2>/dev/null || true
         sed -i 's/entry({"admin", "network", "mt5700m"/entry({"admin", "cellular", "mt5700m"/g' "$f" 2>/dev/null || true
         sed -i 's/entry({"admin", "network", "mt5700"/entry({"admin", "cellular", "mt5700"/g' "$f" 2>/dev/null || true
     done
+    find package/luci-app-mt5700m -type f \( -name "*.lua" -o -name "*.sh" -o -name "*.js" \) | while read -r f; do
+        sed -i 's/ttyUSB2/ttyUSB1/g' "$f" 2>/dev/null || true
+    done
+fi
+
+# -----------------------------------------------------------------------------
+# 9. 拉取智能温控风扇插件（保持原位，放置在默认服务/状态菜单）
+# -----------------------------------------------------------------------------
+if [ ! -d "package/luci-app-h5000m-fancontrol" ]; then
+    git clone --depth=1 https://github.com/FAN789/luci-app-h5000m-fancontrol.git package/luci-app-h5000m-fancontrol 2>/dev/null || true
 fi
 
 exit 0
