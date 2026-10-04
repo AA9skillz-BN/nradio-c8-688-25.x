@@ -1,10 +1,15 @@
+cat << 'EOF' > README.md
 <div align="center">
+
 # 🚀 NRadio C8-688 ImmortalWrt DualBoot 固件
+
 **专为 NRadio C8-688 (MT7981B + 1GB RAM + 8GB eMMC) 打造的满血极速、双系统无损共存固件**
+
 [![Build Status](https://img.shields.io/github/actions/workflow/status/AA9skillz-BN/nradio-c8-688-25.x/build-immortalwrt.yml?branch=main&style=for-the-badge&logo=githubactions&logoColor=white)](https://github.com/AA9skillz-BN/nradio-c8-688-25.x/actions)
 [![Latest Release](https://img.shields.io/github/v/release/AA9skillz-BN/nradio-c8-688-25.x?style=for-the-badge&logo=github&color=blue)](https://github.com/AA9skillz-BN/nradio-c8-688-25.x/releases)
 [![ImmortalWrt](https://img.shields.io/badge/ImmortalWrt-24.10-red?style=for-the-badge&logo=openwrt)](https://immortalwrt.org/)
 [![License](https://img.shields.io/badge/License-GPL%20v3-green?style=for-the-badge)](LICENSE)
+
 <p align="center">
   <b>1GB 物理内存映射</b> • 
   <b>8GB eMMC 动态全容量释放</b> • 
@@ -12,9 +17,13 @@
   <b>双系统 A/B 无损隔离</b> • 
   <b>在线 OTA 一键更新</b>
 </p>
+
 ---
+
 </div>
+
 ## 🌟 核心特性
+
 - 🧠 **1GB RAM 满血激活**：内核 DTS 物理内存重构，告别 512MB 限制，大内存多开无压力。
 - 🛡️ **A/B 双系统无损隔离**：
   - **Slot A**：原厂出厂系统，永不冲刷，永不污染。
@@ -30,7 +39,9 @@
   - MTK 硬件 PPE 芯片级转发加速、FullCone NAT、BBR 拥塞控制算法。
 - 🔄 **GitHub Release 在线 OTA 一键更新**：
   - Web 后台图形化检查更新，自动下载并防冲刷写入 Slot B，平滑升级不掉配置。
+
 ---
+
 ## 🖥️ 默认配置信息
 
 | 项目 | 默认参数 |
@@ -42,7 +53,9 @@
 | **运行槽位** | 副系统 Slot B (`mmcblk0p8` 内核 + `mmcblk0p9` 根分区) |
 
 ---
+
 ## 🧭 后台 Web 菜单一览
+
 ```text
 ├── 📊 状态 (Status)
 ├── 📶 蜂窝网络 (Cellular) ──────── 5G 模组管理 (MT5700M) / 锁频锁网 / AT 终端
