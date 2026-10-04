@@ -54,7 +54,7 @@ jobs:
         git clone --depth 1 $REPO_URL -b$REPO_BRANCH openwrt
         ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
 
-    # ================= 1. CCache 编译对象缓存 =================
+    # ================= 1. CCache 编译对象持久化缓存 =================
     - name: Cache CCache
       uses: actions/cache@v4
       with:
@@ -127,6 +127,9 @@ jobs:
       run: |
         cd openwrt/bin/targets/*/*
         rm -rf packages
+        
+        # 排除无用的中间调试镜像
+        rm -f *initramfs* *rootfs* *kernel.bin
         
         BUILD_VER="$(date +%Y.%m.%d-%H%M)"
         echo "$BUILD_VER" > version.txt
