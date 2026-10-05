@@ -1,27 +1,33 @@
 #!/bin/bash
 # -----------------------------------------------------------------------------
 # DIY script 2: Executed after feeds update & install, before make defconfig
-# 全面适配 25.x / master 分支
+# 适配 ImmortalWrt 25.x / master 分支
 # -----------------------------------------------------------------------------
 
 [ -d "openwrt" ] && cd openwrt
 
-# 1. 注册 nradio_c8-688 编译目标与 1GB RAM 设备树 (DTS)
-FILOGIC_MK="target/linux/mediatek/image/filogic.mk"
+# 1. 注入 NRadio C8-688 设备树 (DTS)
+WORKSPACE_ROOT="${GITHUB_WORKSPACE:-$(pwd)/..}"
+DTS_SOURCE="${WORKSPACE_ROOT}/mt7981b-nradio-c8-688.dts"
 
-# 动态定位 upstream c8-668 设备树
-SRC_668_DTS=$(find target/linux/mediatek/ -name "*c8-668*.dts*" | head -n 1)
-
-if [ -n "$SRC_668_DTS" ] && [ -f "$SRC_668_DTS" ]; then
-    TARGET_DTS_DIR="$(dirname "$SRC_668_DTS")"
-    echo "Found upstream C8-668 DTS at: $SRC_668_DTS"
-    cp -f "$SRC_668_DTS" "$TARGET_DTS_DIR/mt7981b-nradio-c8-688.dts"
-    # 将 512MB 物理内存扩充为 1GB (0x40000000 长度)
-    sed -i 's/<0x40000000 0x20000000>/<0x40000000 0x40000000>/g' "$TARGET_DTS_DIR/mt7981b-nradio-c8-688.dts"
-    sed -i 's/c8-668/c8-688/g' "$TARGET_DTS_DIR/mt7981b-nradio-c8-688.dts"
+if [ -f "$DTS_SOURCE" ]; then
+    echo "Found custom DTS: $DTS_SOURCE"
+    # 同步到 target/linux/mediatek/files-*/ 目录
+    for files_dir in target/linux/mediatek/files-*; do
+        if [ -d "$files_dir" ]; then
+            mkdir -p "$files_dir/arch/arm64/boot/dts/mediatek/"
+            cp -f "$DTS_SOURCE" "$files_dir/arch/arm64/boot/dts/mediatek/"
+            echo "Injected DTS into $files_dir"
+        fi
+    done
+    # 同步到主 DTS 目录作为兜底
+    mkdir -p target/linux/mediatek/dts/
+    cp -f "$DTS_SOURCE" target/linux/mediatek/dts/
 fi
 
-if [ -f "$FILOGIC_MK" ] && ! grep -q "nradio_c8-688" "$FILOGIC_MK"; then
+# 2. 向 filogic.mk 追加设备编译定义 (仅保留一份，避免冲突重复)
+FILOGIC_MK="target/linux/mediatek/image/filogic.mk"
+if [ -f "$FILOGIC_MK" ] && ! grep -q "define Device/nradio_c8-688" "$FILOGIC_MK"; then
     echo "Injecting Device/nradio_c8-688 into filogic.mk..."
     cat << 'EOF' >> "$FILOGIC_MK"
 
@@ -31,27 +37,28 @@ define Device/nradio_c8-688
   DEVICE_DTS := mt7981b-nradio-c8-688
   DEVICE_DTS_DIR := $(DTS_DIR)/mediatek
   SUPPORTED_DEVICES := nradio,c8-688 nradio,c8-668
-  DEVICE_PACKAGES := kmod-mt7981-firmware kmod-usb-net-cdc-ether kmod-usb-net-rndis kmod-usb-serial-option
+  DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware kmod-usb-net-cdc-ether kmod-usb-net-rndis kmod-usb-serial-option
+  IMAGES := sysupgrade.bin
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
 endef
 TARGET_DEVICES += nradio_c8-688
 EOF
 fi
 
-# 2. 修改默认 LAN IP 为 192.168.66.1
+# 3. 修改默认后台 LAN IP 为 192.168.66.1
 sed -i 's/192.168.1.1/192.168.66.1/g' package/base-files/files/bin/config_generate
 
-# 3. 清理已废弃的 kmod-usb2 依赖
+# 4. 清理旧版废弃的 kmod-usb2 声明
 find package/ feeds/ -name "Makefile" -o -name "*.mk" | xargs sed -i 's/+kmod-usb2//g' 2>/dev/null || true
 
-# 4. 创建系统底层目录
+# 5. 准备自定义目录结构
 mkdir -p package/base-files/files/etc/uci-defaults
 mkdir -p package/base-files/files/lib/upgrade
 mkdir -p package/base-files/files/usr/lib/lua/luci/controller
 
-# 5. 首次开机自适应扩展 8GB eMMC 分区空间 (/overlay 撑满)
+# 6. 首次开机自适应扩展 8GB eMMC 分区空间 (/overlay 撑满)
 cat << 'EOF' > package/base-files/files/etc/uci-defaults/96-expand-overlay
-#!/bin/sh
+#!/sh
 if [ ! -f /etc/expanded_overlay_done ]; then
     partx -u /dev/mmcblk0 2>/dev/null || true
     resize.f2fs /dev/mmcblk0p9 2>/dev/null || true
@@ -61,7 +68,7 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/96-expand-overlay
 
-# 6. 配置 AutoUpdate 绑定当前仓库
+# 7. 配置 AutoUpdate 绑定仓库
 cat << 'EOF' > package/base-files/files/etc/uci-defaults/97-autoupdate-custom
 #!/bin/sh
 uci -q batch << EOU
@@ -74,7 +81,7 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/97-autoupdate-custom
 
-# 7. 升级脚本：锁死写入 Slot B (mmcblk0p8 / mmcblk0p9)
+# 8. 升级脚本：锁死写入 Slot B (mmcblk0p8 / mmcblk0p9)
 cat << 'EOF' > package/base-files/files/lib/upgrade/platform.sh
 #!/bin/sh
 RAMFS_COPY_BIN="${RAMFS_COPY_BIN} /usr/sbin/fw_printenv /usr/sbin/fw_setenv"
@@ -100,7 +107,7 @@ platform_do_upgrade() {
 EOF
 chmod +x package/base-files/files/lib/upgrade/platform.sh
 
-# 8. Web 端双系统切换面板
+# 9. Web 端双系统切换面板
 cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/controller/dualboot.lua
 module("luci.controller.dualboot", package.seeall)
 
@@ -150,7 +157,7 @@ function action_switch()
 end
 EOF
 
-# 9. 创建“蜂窝网络”顶层分类并配置 MT5700M 模组
+# 10. 创建“蜂窝网络”顶层分类并配置 MT5700M 模组
 cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/controller/cellular.lua
 module("luci.controller.cellular", package.seeall)
 
@@ -174,45 +181,9 @@ if [ -d "package/luci-app-mt5700m" ]; then
     done
 fi
 
-# 10. 拉取风扇温控插件
+# 11. 拉取风扇温控插件
 if [ ! -d "package/luci-app-h5000m-fancontrol" ]; then
     git clone --depth=1 https://github.com/FAN789/luci-app-h5000m-fancontrol.git package/luci-app-h5000m-fancontrol 2>/dev/null || true
 fi
-
-# 11. 自动适配上游内核并注入 NRadio C8-688 设备支持
-# -----------------------------------------------------------------------------
-echo "Injecting NRadio C8-688 device support dynamically..."
-
-# -----------------------------------------------------------------------------
-# 10. 自动适配上游内核并注入 NRadio C8-688 设备支持
-# -----------------------------------------------------------------------------
-echo "Injecting NRadio C8-688 device support dynamically..."
-
-# (1) 自动寻找当前上游 mediatek 平台使用的所有内核 files 目录
-for files_dir in target/linux/mediatek/files-*; do
-    if [ -d "$files_dir" ]; then
-        # 确保对应内核版本的 DTS 目录存在，并将设备树复制进去
-        mkdir -p "$files_dir/arch/arm64/boot/dts/mediatek/"
-        cp $GITHUB_WORKSPACE/mt7981b-nradio-c8-688.dts "$files_dir/arch/arm64/boot/dts/mediatek/"
-        echo "Successfully injected DTS into $files_dir"
-    fi
-done
-
-# (2) 向 target/linux/mediatek/image/filogic.mk 追加设备编译定义
-cat << 'EOF' >> target/linux/mediatek/image/filogic.mk
-
-define Device/nradio_c8-688
-  DEVICE_VENDOR := NRadio
-  DEVICE_MODEL := C8-688
-  DEVICE_DTS := mt7981b-nradio-c8-688
-  SUPPORTED_DEVICES := nradio,c8-688
-  DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware
-  
-  # 覆盖上游默认规则，彻底抛弃 .itb，仅生成适配双系统脚本的 sysupgrade.bin (Tarball)
-  IMAGES := sysupgrade.bin
-  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
-endef
-TARGET_DEVICES += nradio_c8-688
-EOF
 
 exit 0
