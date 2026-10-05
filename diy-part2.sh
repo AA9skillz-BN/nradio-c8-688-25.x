@@ -62,6 +62,7 @@ find package/ feeds/ -name "Makefile" -o -name "*.mk" | xargs sed -i 's/+kmod-us
 
 # 5. 准备自定义目录结构
 mkdir -p package/base-files/files/etc/uci-defaults
+mkdir -p package/base-files/files/etc/hotplug.d/net
 mkdir -p package/base-files/files/lib/upgrade
 mkdir -p package/base-files/files/usr/bin
 mkdir -p package/base-files/files/usr/lib/lua/luci/controller
@@ -84,7 +85,36 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/96-expand-overlay
 
-# 8. 重构平台升级脚本：适配上游 sysupgrade-tar 格式并锁死 Slot B
+# 8. 注入 5G 模组自适应热插拔与自动联网监听脚本 (动态识别 usb* 或 wwan* 网卡，插卡即用)
+cat << 'EOF' > package/base-files/files/etc/hotplug.d/net/99-modem-auto
+#!/bin/sh
+case "$INTERFACE" in
+    usb*|wwan*)
+        if [ "$ACTION" = "add" ]; then
+            # 1. 确保 firewall 中放行该接口至 WAN 区域
+            if uci -q get firewall.@zone[1] >/dev/null; then
+                uci -q del_list firewall.@zone[1].network='modem_5g'
+                uci add_list firewall.@zone[1].network='modem_5g'
+                uci commit firewall
+                /etc/init.d/firewall reload >/dev/null 2>&1
+            fi
+
+            # 2. 动态绑定识别到的真实物理网卡并使用 DHCP 协议
+            uci set network.modem_5g=interface
+            uci set network.modem_5g.proto='dhcp'
+            uci set network.modem_5g.device="$INTERFACE"
+            uci set network.modem_5g.metric='10'
+            uci commit network
+
+            # 3. 延迟拉起网络接口，等待模组初始化完成
+            ( sleep 3; ifup modem_5g ) &
+        fi
+        ;;
+esac
+EOF
+chmod +x package/base-files/files/etc/hotplug.d/net/99-modem-auto
+
+# 9. 重构平台升级脚本：适配上游 sysupgrade-tar 格式并锁死 Slot B
 cat << 'EOF' > package/base-files/files/lib/upgrade/platform.sh
 #!/bin/sh
 RAMFS_COPY_BIN="${RAMFS_COPY_BIN} /usr/sbin/fw_printenv /usr/sbin/fw_setenv /bin/tar"
@@ -150,7 +180,7 @@ platform_do_upgrade() {
 EOF
 chmod +x package/base-files/files/lib/upgrade/platform.sh
 
-# 9. 注入底层 OTA 执行与检查脚本 (/usr/bin/c8_autoupdate)
+# 10. 注入底层 OTA 执行与检查脚本 (/usr/bin/c8_autoupdate)
 cat << 'EOF' > package/base-files/files/usr/bin/c8_autoupdate
 #!/bin/sh
 REPO="AA9skillz-BN/nradio-c8-688-25.x"
@@ -203,7 +233,7 @@ sysupgrade -n "$TMP_IMG"
 EOF
 chmod +x package/base-files/files/usr/bin/c8_autoupdate
 
-# 10. 专属「在线升级 (AutoUpdate)」独立美观菜单模块
+# 11. 专属「在线升级 (AutoUpdate)」独立美观菜单模块
 cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/controller/c8_autoupdate.lua
 module("luci.controller.c8_autoupdate", package.seeall)
 
@@ -280,7 +310,7 @@ function action_run()
 end
 EOF
 
-# 11. Web 端双系统切换面板
+# 12. Web 端双系统切换面板
 cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/controller/dualboot.lua
 module("luci.controller.dualboot", package.seeall)
 
@@ -330,7 +360,7 @@ function action_switch()
 end
 EOF
 
-# 12. 创建“蜂窝网络”顶层分类并配置 MT5700M 模组
+# 13. 创建“蜂窝网络”顶层分类并配置 MT5700M 模组
 cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/controller/cellular.lua
 module("luci.controller.cellular", package.seeall)
 
@@ -354,7 +384,7 @@ if [ -d "package/luci-app-mt5700m" ]; then
     done
 fi
 
-# 13. 模组默认串口锁定为 ttyUSB1
+# 14. 模组默认串口锁定为 ttyUSB1
 cat << 'EOF' > package/base-files/files/etc/uci-defaults/98-mt5700m-default
 #!/bin/sh
 if [ -f /etc/config/mt5700m ]; then
@@ -367,7 +397,7 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/98-mt5700m-default
 
-# 14. 拉取风扇温控插件
+# 15. 拉取风扇温控插件
 if [ ! -d "package/luci-app-h5000m-fancontrol" ]; then
     git clone --depth=1 https://github.com/FAN789/luci-app-h5000m-fancontrol.git package/luci-app-h5000m-fancontrol 2>/dev/null || true
 fi
