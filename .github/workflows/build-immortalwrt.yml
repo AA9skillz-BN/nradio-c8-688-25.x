@@ -128,13 +128,13 @@ jobs:
         cd openwrt/bin/targets/*/*
         rm -rf packages
         
-        # 排除无用的中间调试镜像
-        rm -f *initramfs* *rootfs* *kernel.bin
+        # 安全排除 initramfs，保留实际的 sysupgrade 固件包
+        rm -f *initramfs*
         
         BUILD_VER="$(date +%Y.%m.%d-%H%M)"
         echo "$BUILD_VER" > version.txt
         echo "BUILD_VER=$BUILD_VER" >> $GITHUB_ENV
-        sha256sum immortalwrt-* > sha256sums
+        sha256sum immortalwrt-* > sha256sums.txt
         
         echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_OUTPUT
@@ -152,6 +152,9 @@ jobs:
       with:
         tag_name: ${{ env.BUILD_VER }}
         name: NRadio C8-688 固件版本 ${{ env.BUILD_VER }}
+        draft: false
+        prerelease: false
+        make_latest: true
         body: |
           ## NRadio C8-688 ImmortalWrt Master (Kernel 6.12) 固件发布
           * 源码仓库: [AA9skillz-BN/nradio-c8-688-25.x](https://github.com/AA9skillz-BN/nradio-c8-688-25.x)
@@ -162,6 +165,6 @@ jobs:
           * 加速状态: MTK PPE 硬件转发 + FullCone NAT + BBR 拥塞控制
           * 支持在 LuCI 后台【系统】->【在线更新】进行 OTA 升级
         files: |
-          ${{ env.FIRMWARE_PATH }}/*.*
+          ${{ env.FIRMWARE_PATH }}/*
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
