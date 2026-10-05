@@ -76,8 +76,8 @@ EOF
 cat << 'EOF' > package/base-files/files/etc/uci-defaults/96-expand-overlay
 #!/bin/sh
 if [ ! -f /etc/expanded_overlay_done ]; then
-    partx -u /dev/mmcblk0 2>/dev/null || true
-    resize.f2fs /dev/mmcblk0p9 2>/dev/null || true
+    command -v partx >/dev/null 2>&1 && partx -u /dev/mmcblk0 2>/dev/null || true
+    command -v resize.f2fs >/dev/null 2>&1 && resize.f2fs /dev/mmcblk0p9 2>/dev/null || true
     touch /etc/expanded_overlay_done
 fi
 exit 0
