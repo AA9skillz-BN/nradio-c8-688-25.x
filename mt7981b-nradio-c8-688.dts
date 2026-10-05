@@ -3,7 +3,6 @@
 #include "mt7981b.dtsi"
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/input/input.h>
-#include <dt-bindings/leds/common.h>
 
 / {
 	model = "NRadio C8-688";
@@ -15,7 +14,6 @@
 		led-failsafe = &led_status;
 		led-running = &led_status;
 		led-upgrade = &led_status;
-		label-mac-device = &gmac0;
 	};
 
 	chosen {
@@ -34,7 +32,6 @@
 			label = "reset";
 			gpios = <&pio 1 GPIO_ACTIVE_LOW>;
 			linux,code = <KEY_RESTART>;
-			debounce-interval = <60>;
 		};
 	};
 
@@ -42,22 +39,20 @@
 		compatible = "gpio-leds";
 
 		led_status: status {
-			function = LED_FUNCTION_STATUS;
-			color = <LED_COLOR_ID_BLUE>;
+			label = "blue:status";
 			gpios = <&pio 9 GPIO_ACTIVE_HIGH>;
 			default-state = "on";
 		};
 
 		net {
-			function = LED_FUNCTION_WAN;
-			color = <LED_COLOR_ID_GREEN>;
+			label = "green:net";
 			gpios = <&pio 10 GPIO_ACTIVE_HIGH>;
 			default-state = "off";
-			linux,default-trigger = "netdev";
 		};
 	};
 };
 
+/* 定义芯片引脚复用 (Pinctrl) */
 &pio {
 	emmc_pins: emmc-pins {
 		mux {
@@ -106,6 +101,7 @@
 };
 
 &mmc0 {
+	/* 绑定 emmc_pins 引脚组 */
 	pinctrl-names = "default";
 	pinctrl-0 = <&emmc_pins>;
 	bus-width = <8>;
@@ -123,7 +119,7 @@
 	status = "okay";
 };
 
-/* MT7981 内置 Wi-Fi 节点及 WED 硬件加速 */
+/* 激活 MT7981 内置 Wi-Fi 模块（Filogic 820 标准节点为 wifi） */
 &wifi {
 	status = "okay";
 };
