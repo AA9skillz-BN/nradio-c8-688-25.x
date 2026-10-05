@@ -7,10 +7,19 @@
 [ -d "openwrt" ] && cd openwrt
 
 # 1. 注入 NRadio C8-688 设备树 (DTS)
-WORKSPACE_ROOT="${GITHUB_WORKSPACE:-$(pwd)/..}"
-DTS_SOURCE="${WORKSPACE_ROOT}/mt7981b-nradio-c8-688.dts"
+# 自动在当前工作目录、上级目录及 GITHUB_WORKSPACE 中寻找自定义 DTS
+DTS_SOURCE=""
+for search_path in \
+    "${GITHUB_WORKSPACE}/mt7981b-nradio-c8-688.dts" \
+    "$(pwd)/../mt7981b-nradio-c8-688.dts" \
+    "$(pwd)/mt7981b-nradio-c8-688.dts"; do
+    if [ -f "$search_path" ]; then
+        DTS_SOURCE="$search_path"
+        break
+    fi
+done
 
-if [ -f "$DTS_SOURCE" ]; then
+if [ -n "$DTS_SOURCE" ]; then
     echo "Found custom DTS: $DTS_SOURCE"
     for files_dir in target/linux/mediatek/files-*; do
         if [ -d "$files_dir" ]; then
@@ -21,6 +30,9 @@ if [ -f "$DTS_SOURCE" ]; then
     done
     mkdir -p target/linux/mediatek/dts/
     cp -f "$DTS_SOURCE" target/linux/mediatek/dts/
+else
+    echo "ERROR: mt7981b-nradio-c8-688.dts not found!"
+    exit 1
 fi
 
 # 2. 向 filogic.mk 追加设备编译定义 (仅保留一份，避免冲突重复)
@@ -187,7 +199,7 @@ fi
 
 # 12. 模组默认串口锁定为 ttyUSB1
 cat << 'EOF' > package/base-files/files/etc/uci-defaults/98-mt5700m-default
-#!/sh
+#!/bin/sh
 if [ -f /etc/config/mt5700m ]; then
     uci -q batch << EOU
 set mt5700m.@mt5700m[0].port='/dev/ttyUSB1'
