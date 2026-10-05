@@ -60,6 +60,13 @@
 			groups = "emmc_51";
 		};
 	};
+
+	pwm0_pins: pwm0-pins {
+		mux {
+			function = "pwm";
+			groups = "pwm0";
+		};
+	};
 };
 
 &uart0 {
@@ -101,7 +108,6 @@
 };
 
 &mmc0 {
-	/* 绑定 emmc_pins 引脚组 */
 	pinctrl-names = "default";
 	pinctrl-0 = <&emmc_pins>;
 	bus-width = <8>;
@@ -116,6 +122,13 @@
 };
 
 &xhci {
+	status = "okay";
+};
+
+/* 激活硬件 PWM 控制器 */
+&pwm {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pwm0_pins>;
 	status = "okay";
 };
 
