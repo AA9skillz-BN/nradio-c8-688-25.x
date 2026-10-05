@@ -17,7 +17,8 @@
 	};
 
 	chosen {
-		bootargs = "console=ttyS0,115200n8 root=PARTLABEL=rootfs_2nd rootwait rootfstype=squashfs,ext4";
+		/* 严格对齐 Slot B 的 rootfs 实际挂载分区 mmcblk0p9 */
+		bootargs = "console=ttyS0,115200n8 root=/dev/mmcblk0p9 rootwait rootfstype=squashfs,f2fs,ext4";
 	};
 
 	memory@40000000 {
@@ -49,6 +50,15 @@
 			gpios = <&pio 10 GPIO_ACTIVE_HIGH>;
 			default-state = "off";
 		};
+	};
+
+	/* 联动：为 luci-app-h5000m-fancontrol 提供底层的 hwmon pwm-fan 设备接口 */
+	fan: pwm-fan {
+		compatible = "pwm-fan";
+		pwms = <&pwm 0 50000 0>;
+		cooling-levels = <0 64 128 192 255>;
+		#cooling-cells = <2>;
+		status = "okay";
 	};
 };
 
@@ -133,14 +143,14 @@
 	status = "okay";
 };
 
-/* 激活硬件 PWM 控制器 */
+/* 激活硬件 PWM 控制器并绑定引脚 */
 &pwm {
 	pinctrl-names = "default";
 	pinctrl-0 = <&pwm0_pins>;
 	status = "okay";
 };
 
-/* 激活 MT7981 内置 Wi-Fi 模块 */
+/* 激活 MT7981 内置 Wi-Fi 模块并启用无线子系统 */
 &wifi {
 	status = "okay";
 };
