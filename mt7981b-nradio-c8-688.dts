@@ -52,7 +52,7 @@
 		};
 	};
 
-	/* 联动：为 luci-app-h5000m-fancontrol 提供底层的 hwmon pwm-fan 设备接口 */
+	/* 为 luci-app-h5000m-fancontrol 提供底层的 hwmon pwm-fan 设备接口 */
 	fan: pwm-fan {
 		compatible = "pwm-fan";
 		pwms = <&pwm 0 50000 0>;
@@ -150,7 +150,7 @@
 	status = "okay";
 };
 
-/* 激活 MT7981 内置 Wi-Fi 模块并启用无线子系统 */
+/* 激活 MT7981 内置 Wi-Fi 模块 */
 &wifi {
 	status = "okay";
 };
