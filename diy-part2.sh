@@ -150,71 +150,137 @@ platform_do_upgrade() {
 EOF
 chmod +x package/base-files/files/lib/upgrade/platform.sh
 
-# 9. 注入适配 25.x 现代架构的 OTA 脚本与后台命令
+# 9. 注入底层 OTA 执行与检查脚本 (/usr/bin/c8_autoupdate)
 cat << 'EOF' > package/base-files/files/usr/bin/c8_autoupdate
 #!/bin/sh
 REPO="AA9skillz-BN/nradio-c8-688-25.x"
 API_URL="https://api.github.com/repos/${REPO}/releases/latest"
 TMP_IMG="/tmp/sysupgrade.bin"
 
-echo "=== 正在检测最新 GitHub 固件版本 [${REPO}] ==="
+echo "=== [OTA] 正在检测 GitHub Release 最新版本 [${REPO}] ==="
 RELEASE_JSON=$(curl -sL --connect-timeout 10 "$API_URL")
 if [ -z "$RELEASE_JSON" ]; then
-    echo "[错误] 无法连接到 GitHub API，请检查网络。"
+    echo "[错误] 无法连接到 GitHub API，请检查网络是否通畅。"
     exit 1
 fi
 
 TAG_NAME=$(echo "$RELEASE_JSON" | jq -r '.tag_name // empty')
-echo "最新线上版本标签: ${TAG_NAME:-未知}"
+echo "线上最新版本标签: ${TAG_NAME:-未知}"
 
 DOWNLOAD_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | test(".*nradio_c8-688.*sysupgrade\\.bin$")) | .browser_download_url' | head -n 1)
 
 if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
-    echo "[错误] 未在最新 Release 中找到适配 NRadio C8-688 的 sysupgrade.bin 固件！"
+    echo "[错误] 未检测到匹配 NRadio C8-688 的 sysupgrade.bin 固件！"
     exit 1
 fi
 
 echo "固件下载地址: $DOWNLOAD_URL"
 
-if [ "$1" = "-c" ]; then
-    echo "检测完成，固件可用。"
+if [ "$1" = "check" ]; then
+    echo "=== 检测完毕：有可用固件版本 (${TAG_NAME}) ==="
     exit 0
 fi
 
-echo "正在下载固件..."
+echo "正在下载固件到本地内存..."
 rm -f "$TMP_IMG"
 curl -L -k --connect-timeout 15 -o "$TMP_IMG" "$DOWNLOAD_URL"
 
 if [ ! -s "$TMP_IMG" ]; then
-    echo "[错误] 固件下载失败或文件为空！"
+    echo "[错误] 固件下载失败或文件损坏。"
     exit 1
 fi
 
-echo "固件下载完毕，正在校验..."
+echo "固件下载完成，正在进行完整性校验 (sysupgrade -t)..."
 if ! sysupgrade -t "$TMP_IMG"; then
-    echo "[错误] 固件校验未通过，已中止写入！"
+    echo "[错误] 固件校验不通过，已中止写入！"
     rm -f "$TMP_IMG"
     exit 1
 fi
 
-echo "校验通过，开始烧录至 Slot B 并重启..."
+echo "校验通过！正在写入副系统 Slot B 分区并重启系统..."
+sleep 2
 sysupgrade -n "$TMP_IMG"
 EOF
 chmod +x package/base-files/files/usr/bin/c8_autoupdate
 
-cat << 'EOF' > package/base-files/files/etc/uci-defaults/99-commands-ota
-#!/bin/sh
-uci -q batch << EOU
-set commands.@command[0]=command
-set commands.@command[0].name='检查并执行 Slot B 在线升级 (OTA)'
-set commands.@command[0].command='/usr/bin/c8_autoupdate'
-commit commands
-EOU
-exit 0
-EOF
-chmod +x package/base-files/files/etc/uci-defaults/99-commands-ota
+# 10. 专属「在线升级 (AutoUpdate)」独立美观菜单模块
+cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/controller/c8_autoupdate.lua
+module("luci.controller.c8_autoupdate", package.seeall)
 
-# 10. Web 端双系统切换面板
+function index()
+    entry({"admin", "system", "c8_autoupdate"}, call("action_index"), _("在线更新"), 89).dependent = true
+    entry({"admin", "system", "c8_autoupdate", "run"}, call("action_run")).leaf = true
+end
+
+function action_index()
+    local html = [[
+        <div class="cbi-map" id="cbi-autoupdate">
+            <h2 name="content">在线更新 (NRadio C8-688)</h2>
+            <div class="cbi-map-descr">当前系统为 DualBoot 架构，一键升级将安全锁定并仅覆盖副系统 (Slot B)，出厂原厂系统物理绝缘免受冲击。</div>
+
+            <fieldset class="cbi-section">
+                <legend>固件升级控制台</legend>
+                <div style="display: flex; gap: 12px; margin-bottom: 16px;">
+                    <button class="cbi-button cbi-button-apply" onclick="executeOTA('check')">🔍 仅检查新版本</button>
+                    <button class="cbi-button cbi-button-reset" style="background-color: #0072ff; color: #fff;" onclick="if(confirm('确认立即下载并烧录最新固件至 Slot B 吗？完成后设备将自动重启。')) executeOTA('upgrade');">🚀 一键在线升级并重启</button>
+                </div>
+
+                <div id="ota-terminal-box" style="margin-top: 15px;">
+                    <label><b>实时升级日志终端：</b></label>
+                    <pre id="ota-output" style="background: #1e1e1e; color: #00ff66; padding: 15px; border-radius: 8px; font-family: monospace; height: 320px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;">点击上方按钮开始检测...</pre>
+                </div>
+            </fieldset>
+
+            <script type="text/javascript">
+                function executeOTA(mode) {
+                    var out = document.getElementById('ota-output');
+                    out.innerText = (mode === 'check' ? '[任务] 正在查询 GitHub Release 最新固件信息...\n' : '[任务] 启动全自动下载校验与烧录流程...\n');
+                    
+                    var xhr = new XMLHttpRequest();
+                    xhr.open('GET', ']] .. luci.dispatcher.build_url("admin", "system", "c8_autoupdate", "run") .. [[?mode=' + mode, true);
+                    
+                    var lastIndex = 0;
+                    xhr.onprogress = function() {
+                        var curr = xhr.responseText.substring(lastIndex);
+                        lastIndex = xhr.responseText.length;
+                        out.innerText += curr;
+                        out.scrollTop = out.scrollHeight;
+                    };
+                    
+                    xhr.onload = function() {
+                        out.scrollTop = out.scrollHeight;
+                    };
+                    
+                    xhr.onerror = function() {
+                        out.innerText += '\n[网络错误] 请求执行超时或网络中断，请稍后重试。';
+                    };
+                    
+                    xhr.send();
+                }
+            </script>
+        </div>
+    ]]
+    luci.template.render_string(html)
+end
+
+function action_run()
+    local mode = luci.http.formvalue("mode") or "check"
+    luci.http.prepare_content("text/plain; charset=utf-8")
+    local cmd = (mode == "upgrade") and "/usr/bin/c8_autoupdate" or "/usr/bin/c8_autoupdate check"
+    
+    local handle = io.popen(cmd .. " 2>&1")
+    if handle then
+        while true do
+            local line = handle:read("*l")
+            if not line then break end
+            luci.http.write(line .. "\n")
+        end
+        handle:close()
+    end
+end
+EOF
+
+# 11. Web 端双系统切换面板
 cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/controller/dualboot.lua
 module("luci.controller.dualboot", package.seeall)
 
@@ -264,7 +330,7 @@ function action_switch()
 end
 EOF
 
-# 11. 创建“蜂窝网络”顶层分类并配置 MT5700M 模组
+# 12. 创建“蜂窝网络”顶层分类并配置 MT5700M 模组
 cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/controller/cellular.lua
 module("luci.controller.cellular", package.seeall)
 
@@ -288,7 +354,7 @@ if [ -d "package/luci-app-mt5700m" ]; then
     done
 fi
 
-# 12. 模组默认串口锁定为 ttyUSB1
+# 13. 模组默认串口锁定为 ttyUSB1
 cat << 'EOF' > package/base-files/files/etc/uci-defaults/98-mt5700m-default
 #!/bin/sh
 if [ -f /etc/config/mt5700m ]; then
@@ -301,7 +367,7 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/98-mt5700m-default
 
-# 13. 拉取风扇温控插件
+# 14. 拉取风扇温控插件
 if [ ! -d "package/luci-app-h5000m-fancontrol" ]; then
     git clone --depth=1 https://github.com/FAN789/luci-app-h5000m-fancontrol.git package/luci-app-h5000m-fancontrol 2>/dev/null || true
 fi
