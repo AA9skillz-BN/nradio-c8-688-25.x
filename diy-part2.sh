@@ -12,7 +12,6 @@ DTS_SOURCE="${WORKSPACE_ROOT}/mt7981b-nradio-c8-688.dts"
 
 if [ -f "$DTS_SOURCE" ]; then
     echo "Found custom DTS: $DTS_SOURCE"
-    # 同步到 target/linux/mediatek/files-*/ 目录
     for files_dir in target/linux/mediatek/files-*; do
         if [ -d "$files_dir" ]; then
             mkdir -p "$files_dir/arch/arm64/boot/dts/mediatek/"
@@ -20,7 +19,6 @@ if [ -f "$DTS_SOURCE" ]; then
             echo "Injected DTS into $files_dir"
         fi
     done
-    # 同步到主 DTS 目录作为兜底
     mkdir -p target/linux/mediatek/dts/
     cp -f "$DTS_SOURCE" target/linux/mediatek/dts/
 fi
@@ -56,9 +54,15 @@ mkdir -p package/base-files/files/etc/uci-defaults
 mkdir -p package/base-files/files/lib/upgrade
 mkdir -p package/base-files/files/usr/lib/lua/luci/controller
 
-# 6. 首次开机自适应扩展 8GB eMMC 分区空间 (/overlay 撑满)
+# 6. 配置 U-Boot 环境变量映射文件 (供 dualboot 与 autoupdate 使用)
+cat << 'EOF' > package/base-files/files/etc/fw_env.config
+# MTD/MMC device name   Device offset   Env size
+/dev/mmcblk0            0x100000        0x80000
+EOF
+
+# 7. 首次开机自适应扩展 8GB eMMC 分区空间 (/overlay 撑满)
 cat << 'EOF' > package/base-files/files/etc/uci-defaults/96-expand-overlay
-#!/sh
+#!/bin/sh
 if [ ! -f /etc/expanded_overlay_done ]; then
     partx -u /dev/mmcblk0 2>/dev/null || true
     resize.f2fs /dev/mmcblk0p9 2>/dev/null || true
@@ -68,7 +72,7 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/96-expand-overlay
 
-# 7. 配置 AutoUpdate 绑定仓库
+# 8. 配置 AutoUpdate 绑定仓库
 cat << 'EOF' > package/base-files/files/etc/uci-defaults/97-autoupdate-custom
 #!/bin/sh
 uci -q batch << EOU
@@ -81,7 +85,7 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/97-autoupdate-custom
 
-# 8. 升级脚本：锁死写入 Slot B (mmcblk0p8 / mmcblk0p9)
+# 9. 升级脚本：锁死写入 Slot B (mmcblk0p8 / mmcblk0p9)
 cat << 'EOF' > package/base-files/files/lib/upgrade/platform.sh
 #!/bin/sh
 RAMFS_COPY_BIN="${RAMFS_COPY_BIN} /usr/sbin/fw_printenv /usr/sbin/fw_setenv"
@@ -107,7 +111,7 @@ platform_do_upgrade() {
 EOF
 chmod +x package/base-files/files/lib/upgrade/platform.sh
 
-# 9. Web 端双系统切换面板
+# 10. Web 端双系统切换面板
 cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/controller/dualboot.lua
 module("luci.controller.dualboot", package.seeall)
 
@@ -157,7 +161,7 @@ function action_switch()
 end
 EOF
 
-# 10. 创建“蜂窝网络”顶层分类并配置 MT5700M 模组
+# 11. 创建“蜂窝网络”顶层分类并配置 MT5700M 模组
 cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/controller/cellular.lua
 module("luci.controller.cellular", package.seeall)
 
@@ -181,7 +185,20 @@ if [ -d "package/luci-app-mt5700m" ]; then
     done
 fi
 
-# 11. 拉取风扇温控插件
+# 12. 模组默认串口锁定为 ttyUSB1
+cat << 'EOF' > package/base-files/files/etc/uci-defaults/98-mt5700m-default
+#!/bin/sh
+if [ -f /etc/config/mt5700m ]; then
+    uci -q batch << EOU
+set mt5700m.@mt5700m[0].port='/dev/ttyUSB1'
+commit mt5700m
+EOU
+fi
+exit 0
+EOF
+chmod +x package/base-files/files/etc/uci-defaults/98-mt5700m-default
+
+# 13. 拉取风扇温控插件
 if [ ! -d "package/luci-app-h5000m-fancontrol" ]; then
     git clone --depth=1 https://github.com/FAN789/luci-app-h5000m-fancontrol.git package/luci-app-h5000m-fancontrol 2>/dev/null || true
 fi
