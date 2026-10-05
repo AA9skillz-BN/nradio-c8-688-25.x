@@ -1,13 +1,12 @@
 #!/bin/bash
 # -----------------------------------------------------------------------------
 # DIY script 2: Executed after feeds update & install, before make defconfig
-# 适配 ImmortalWrt 25.x / master 分支
+# 全面适配 ImmortalWrt 25.x / master 分支
 # -----------------------------------------------------------------------------
 
 [ -d "openwrt" ] && cd openwrt
 
 # 1. 注入 NRadio C8-688 设备树 (DTS)
-# 自动在当前工作目录、上级目录及 GITHUB_WORKSPACE 中寻找自定义 DTS
 DTS_SOURCE=""
 for search_path in \
     "${GITHUB_WORKSPACE}/mt7981b-nradio-c8-688.dts" \
@@ -35,7 +34,7 @@ else
     exit 1
 fi
 
-# 2. 向 filogic.mk 追加设备编译定义 (仅保留一份，避免冲突重复)
+# 2. 向 filogic.mk 追加设备编译定义
 FILOGIC_MK="target/linux/mediatek/image/filogic.mk"
 if [ -f "$FILOGIC_MK" ] && ! grep -q "define Device/nradio_c8-688" "$FILOGIC_MK"; then
     echo "Injecting Device/nradio_c8-688 into filogic.mk..."
@@ -64,9 +63,10 @@ find package/ feeds/ -name "Makefile" -o -name "*.mk" | xargs sed -i 's/+kmod-us
 # 5. 准备自定义目录结构
 mkdir -p package/base-files/files/etc/uci-defaults
 mkdir -p package/base-files/files/lib/upgrade
+mkdir -p package/base-files/files/usr/bin
 mkdir -p package/base-files/files/usr/lib/lua/luci/controller
 
-# 6. 配置 U-Boot 环境变量映射文件 (供 dualboot 与 autoupdate 使用)
+# 6. 配置 U-Boot 环境变量映射文件 (供 dualboot 与 OTA 使用)
 cat << 'EOF' > package/base-files/files/etc/fw_env.config
 # MTD/MMC device name   Device offset   Env size
 /dev/mmcblk0            0x100000        0x80000
@@ -84,25 +84,38 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/96-expand-overlay
 
-# 8. 配置 AutoUpdate 绑定仓库
-cat << 'EOF' > package/base-files/files/etc/uci-defaults/97-autoupdate-custom
-#!/bin/sh
-uci -q batch << EOU
-set autoupdate.main=autoupdate
-set autoupdate.main.github='AA9skillz-BN/nradio-c8-688-25.x'
-set autoupdate.main.cloud='GitHub'
-commit autoupdate
-EOU
-exit 0
-EOF
-chmod +x package/base-files/files/etc/uci-defaults/97-autoupdate-custom
-
-# 9. 升级脚本：锁死写入 Slot B (mmcblk0p8 / mmcblk0p9)
+# 8. 重构平台升级脚本：适配上游 sysupgrade-tar 格式并锁死 Slot B
 cat << 'EOF' > package/base-files/files/lib/upgrade/platform.sh
 #!/bin/sh
-RAMFS_COPY_BIN="${RAMFS_COPY_BIN} /usr/sbin/fw_printenv /usr/sbin/fw_setenv"
+RAMFS_COPY_BIN="${RAMFS_COPY_BIN} /usr/sbin/fw_printenv /usr/sbin/fw_setenv /bin/tar"
 
 platform_check_image() {
+    local tar_file="$1"
+    [ -f "$tar_file" ] || return 1
+
+    if ! tar -tf "$tar_file" >/dev/null 2>&1; then
+        echo "Invalid image: Not a valid sysupgrade archive."
+        return 1
+    fi
+
+    local board_dir=$(tar -tf "$tar_file" | grep -m 1 '^sysupgrade-.*/$')
+    board_dir="${board_dir%/}"
+
+    if [ -z "$board_dir" ]; then
+        echo "Invalid image: Missing sysupgrade metadata directory."
+        return 1
+    fi
+
+    if ! tar -tf "$tar_file" | grep -q "${board_dir}/kernel"; then
+        echo "Invalid image: Kernel image not found in archive."
+        return 1
+    fi
+
+    if ! tar -tf "$tar_file" | grep -Eq "${board_dir}/(root|rootfs)"; then
+        echo "Invalid image: Rootfs image not found in archive."
+        return 1
+    fi
+
     return 0
 }
 
@@ -111,17 +124,95 @@ platform_do_upgrade() {
     local board_dir=$(tar -tf "$tar_file" | grep -m 1 '^sysupgrade-.*/$')
     board_dir="${board_dir%/}"
 
-    echo "=== Upgrading Slot B (mmcblk0p8 & mmcblk0p9) ==="
+    echo "=== [DualBoot] Upgrading Slot B (Kernel: mmcblk0p8, Rootfs: mmcblk0p9) ==="
+
+    echo "Flashing Kernel to /dev/mmcblk0p8..."
     tar -xf "$tar_file" "${board_dir}/kernel" -O > /dev/mmcblk0p8
-    tar -xf "$tar_file" "${board_dir}/rootfs" -O > /dev/mmcblk0p9
+
+    echo "Flashing RootFS to /dev/mmcblk0p9..."
+    if tar -tf "$tar_file" | grep -q "${board_dir}/rootfs"; then
+        tar -xf "$tar_file" "${board_dir}/rootfs" -O > /dev/mmcblk0p9
+    elif tar -tf "$tar_file" | grep -q "${board_dir}/root"; then
+        tar -xf "$tar_file" "${board_dir}/root" -O > /dev/mmcblk0p9
+    fi
 
     if command -v fw_setenv >/dev/null 2>&1; then
+        echo "Locking boot_part to 2 (Slot B)..."
         fw_setenv boot_part 2 2>/dev/null || true
     fi
+
+    rm -f /overlay/upper/etc/expanded_overlay_done 2>/dev/null || true
+    rm -f /etc/expanded_overlay_done 2>/dev/null || true
+
     sync
+    echo "=== Slot B Upgrade Completed Successfully ==="
 }
 EOF
 chmod +x package/base-files/files/lib/upgrade/platform.sh
+
+# 9. 注入适配 25.x 现代架构的 OTA 脚本与后台命令
+cat << 'EOF' > package/base-files/files/usr/bin/c8_autoupdate
+#!/bin/sh
+REPO="AA9skillz-BN/nradio-c8-688-25.x"
+API_URL="https://api.github.com/repos/${REPO}/releases/latest"
+TMP_IMG="/tmp/sysupgrade.bin"
+
+echo "=== 正在检测最新 GitHub 固件版本 [${REPO}] ==="
+RELEASE_JSON=$(curl -sL --connect-timeout 10 "$API_URL")
+if [ -z "$RELEASE_JSON" ]; then
+    echo "[错误] 无法连接到 GitHub API，请检查网络。"
+    exit 1
+fi
+
+TAG_NAME=$(echo "$RELEASE_JSON" | jq -r '.tag_name // empty')
+echo "最新线上版本标签: ${TAG_NAME:-未知}"
+
+DOWNLOAD_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | test(".*nradio_c8-688.*sysupgrade\\.bin$")) | .browser_download_url' | head -n 1)
+
+if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
+    echo "[错误] 未在最新 Release 中找到适配 NRadio C8-688 的 sysupgrade.bin 固件！"
+    exit 1
+fi
+
+echo "固件下载地址: $DOWNLOAD_URL"
+
+if [ "$1" = "-c" ]; then
+    echo "检测完成，固件可用。"
+    exit 0
+fi
+
+echo "正在下载固件..."
+rm -f "$TMP_IMG"
+curl -L -k --connect-timeout 15 -o "$TMP_IMG" "$DOWNLOAD_URL"
+
+if [ ! -s "$TMP_IMG" ]; then
+    echo "[错误] 固件下载失败或文件为空！"
+    exit 1
+fi
+
+echo "固件下载完毕，正在校验..."
+if ! sysupgrade -t "$TMP_IMG"; then
+    echo "[错误] 固件校验未通过，已中止写入！"
+    rm -f "$TMP_IMG"
+    exit 1
+fi
+
+echo "校验通过，开始烧录至 Slot B 并重启..."
+sysupgrade -n "$TMP_IMG"
+EOF
+chmod +x package/base-files/files/usr/bin/c8_autoupdate
+
+cat << 'EOF' > package/base-files/files/etc/uci-defaults/99-commands-ota
+#!/bin/sh
+uci -q batch << EOU
+set commands.@command[0]=command
+set commands.@command[0].name='检查并执行 Slot B 在线升级 (OTA)'
+set commands.@command[0].command='/usr/bin/c8_autoupdate'
+commit commands
+EOU
+exit 0
+EOF
+chmod +x package/base-files/files/etc/uci-defaults/99-commands-ota
 
 # 10. Web 端双系统切换面板
 cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/controller/dualboot.lua
