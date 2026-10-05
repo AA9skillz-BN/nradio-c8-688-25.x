@@ -128,7 +128,7 @@ jobs:
         cd openwrt/bin/targets/*/*
         rm -rf packages
         
-        # 安全排除 initramfs，保留实际的 sysupgrade 固件包
+        # 仅安全排除 initramfs，保留实际的 sysupgrade 固件包，避免误删
         rm -f *initramfs*
         
         BUILD_VER="$(date +%Y.%m.%d-%H%M)"
