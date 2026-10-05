@@ -187,7 +187,7 @@ fi
 
 # 12. 模组默认串口锁定为 ttyUSB1
 cat << 'EOF' > package/base-files/files/etc/uci-defaults/98-mt5700m-default
-#!/bin/sh
+#!/sh
 if [ -f /etc/config/mt5700m ]; then
     uci -q batch << EOU
 set mt5700m.@mt5700m[0].port='/dev/ttyUSB1'
