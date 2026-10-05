@@ -20,21 +20,24 @@ done
 
 if [ -n "$DTS_SOURCE" ]; then
     echo "Found custom DTS: $DTS_SOURCE"
-    for files_dir in target/linux/mediatek/files-*; do
+    # 覆盖上游 target dts 目录
+    mkdir -p target/linux/mediatek/dts/
+    cp -f "$DTS_SOURCE" target/linux/mediatek/dts/
+
+    # 覆盖可能存在的 files/ 补丁目录
+    for files_dir in target/linux/mediatek/files target/linux/mediatek/files-*; do
         if [ -d "$files_dir" ]; then
             mkdir -p "$files_dir/arch/arm64/boot/dts/mediatek/"
             cp -f "$DTS_SOURCE" "$files_dir/arch/arm64/boot/dts/mediatek/"
             echo "Injected DTS into $files_dir"
         fi
     done
-    mkdir -p target/linux/mediatek/dts/
-    cp -f "$DTS_SOURCE" target/linux/mediatek/dts/
 else
     echo "ERROR: mt7981b-nradio-c8-688.dts not found!"
     exit 1
 fi
 
-# 2. 向 filogic.mk 追加设备编译定义
+# 2. 向 filogic.mk 追加设备编译定义 (移除多余的 DEVICE_DTS_DIR，彻底解决 mediatek/mediatek 嵌套问题)
 FILOGIC_MK="target/linux/mediatek/image/filogic.mk"
 if [ -f "$FILOGIC_MK" ] && ! grep -q "define Device/nradio_c8-688" "$FILOGIC_MK"; then
     echo "Injecting Device/nradio_c8-688 into filogic.mk..."
@@ -44,7 +47,6 @@ define Device/nradio_c8-688
   DEVICE_VENDOR := NRadio
   DEVICE_MODEL := C8-688
   DEVICE_DTS := mt7981b-nradio-c8-688
-  DEVICE_DTS_DIR := $(DTS_DIR)/mediatek
   SUPPORTED_DEVICES := nradio,c8-688 nradio,c8-668
   DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware kmod-usb-net-cdc-ether kmod-usb-net-rndis kmod-usb-serial-option
   IMAGES := sysupgrade.bin
