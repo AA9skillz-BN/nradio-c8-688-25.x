@@ -20,6 +20,9 @@ env:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    # 授予 Release 创建与清理所需的写权限
+    permissions:
+      contents: write
 
     steps:
     - name: Checkout
@@ -173,5 +176,15 @@ jobs:
           ${{ env.FIRMWARE_PATH }}/*sysupgrade.bin
           ${{ env.FIRMWARE_PATH }}/sha256sums.txt
           ${{ env.FIRMWARE_PATH }}/version.txt
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    # ================= 3. 自动清理历史 Release，仅保留最新 3 个 =================
+    - name: Delete Older Releases
+      uses: dev-drprasad/delete-older-releases@v0.3.3
+      if: steps.organize.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true'
+      with:
+        keep_latest: 3
+        delete_tags: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
