@@ -1,12 +1,12 @@
 #!/bin/bash
 # -----------------------------------------------------------------------------
-# DIY script 2: Executed after feeds update & install, before make defconfig
-# 全面适配 ImmortalWrt 25.x / master 分支
+# DIY script 2: NRadio C8-688 终极全功能工业级脚本
+# 适配 ImmortalWrt 25.x / Linux 6.12 / fw4 (nftables) / DualBoot Slot B
 # -----------------------------------------------------------------------------
 
 [ -d "openwrt" ] && cd openwrt
 
-# 1. 注入 NRadio C8-688 设备树 (DTS)
+# 1. 注入设备树 (DTS)
 DTS_SOURCE=""
 for search_path in \
     "${GITHUB_WORKSPACE}/mt7981b-nradio-c8-688.dts" \
@@ -20,16 +20,13 @@ done
 
 if [ -n "$DTS_SOURCE" ]; then
     echo "Found custom DTS: $DTS_SOURCE"
-    # 覆盖上游 target dts 目录
     mkdir -p target/linux/mediatek/dts/
     cp -f "$DTS_SOURCE" target/linux/mediatek/dts/
 
-    # 覆盖可能存在的 files/ 补丁目录
     for files_dir in target/linux/mediatek/files target/linux/mediatek/files-*; do
         if [ -d "$files_dir" ]; then
             mkdir -p "$files_dir/arch/arm64/boot/dts/mediatek/"
             cp -f "$DTS_SOURCE" "$files_dir/arch/arm64/boot/dts/mediatek/"
-            echo "Injected DTS into $files_dir"
         fi
     done
 else
@@ -37,7 +34,7 @@ else
     exit 1
 fi
 
-# 2. 向 filogic.mk 追加设备编译定义 (移除多余的 DEVICE_DTS_DIR，彻底解决 mediatek/mediatek 嵌套问题)
+# 2. 向 filogic.mk 追加设备定义 (移除多余 DEVICE_DTS_DIR，杜绝路径嵌套报错)
 FILOGIC_MK="target/linux/mediatek/image/filogic.mk"
 if [ -f "$FILOGIC_MK" ] && ! grep -q "define Device/nradio_c8-688" "$FILOGIC_MK"; then
     echo "Injecting Device/nradio_c8-688 into filogic.mk..."
@@ -56,26 +53,45 @@ TARGET_DEVICES += nradio_c8-688
 EOF
 fi
 
-# 3. 修改默认后台 LAN IP 为 192.168.66.1
+# 3. 基础设置：LAN IP 默认设为 192.168.66.1
 sed -i 's/192.168.1.1/192.168.66.1/g' package/base-files/files/bin/config_generate
 
 # 4. 清理旧版废弃的 kmod-usb2 声明
 find package/ feeds/ -name "Makefile" -o -name "*.mk" | xargs sed -i 's/+kmod-usb2//g' 2>/dev/null || true
 
-# 5. 准备自定义目录结构
+# 5. 准备目录结构
 mkdir -p package/base-files/files/etc/uci-defaults
 mkdir -p package/base-files/files/etc/hotplug.d/net
+mkdir -p package/base-files/files/etc/nftables.d
+mkdir -p package/base-files/files/etc/rc.button
+mkdir -p package/base-files/files/etc/crontabs
 mkdir -p package/base-files/files/lib/upgrade
 mkdir -p package/base-files/files/usr/bin
 mkdir -p package/base-files/files/usr/lib/lua/luci/controller
 
 # 6. 配置 U-Boot 环境变量映射文件 (供 dualboot 与 OTA 使用)
 cat << 'EOF' > package/base-files/files/etc/fw_env.config
-# MTD/MMC device name   Device offset   Env size
 /dev/mmcblk0            0x100000        0x80000
 EOF
 
-# 7. 首次开机自适应扩展 8GB eMMC 分区空间 (/overlay 撑满)
+# 7. 实装 TCP BBR 拥塞控制与 FQ 队列调度
+cat << 'EOF' >> package/base-files/files/etc/sysctl.conf
+net.core.default_qdisc=fq
+net.ipv4.tcp_congestion_control=bbr
+EOF
+
+# 8. 防火墙出站 TTL / Hop Limit 强制锁定为 64 (绕过运营商热点流量检测)
+cat << 'EOF' > package/base-files/files/etc/nftables.d/10-custom-ttl.nft
+table inet fw4 {
+    chain postrouting_mangle_ttl {
+        type filter hook postrouting priority 300; policy accept;
+        ip ttl set 64
+        ip6 hoplimit set 64
+    }
+}
+EOF
+
+# 9. 首次开机自适应扩展 8GB eMMC 分区空间 (/overlay 撑满)
 cat << 'EOF' > package/base-files/files/etc/uci-defaults/96-expand-overlay
 #!/bin/sh
 if [ ! -f /etc/expanded_overlay_done ]; then
@@ -87,13 +103,48 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/96-expand-overlay
 
-# 8. 注入 5G 模组自适应热插拔与自动联网监听脚本 (动态识别 usb* 或 wwan* 网卡，插卡即用)
+# 10. 出厂默认开启 Wi-Fi 并设置 160MHz 满血频宽 (免接网线开箱直连)
+cat << 'EOF' > package/base-files/files/etc/uci-defaults/97-default-wifi
+#!/bin/sh
+wifi config 2>/dev/null || true
+
+# 遍历所有射频开启并配置专属 SSID
+radio_idx=0
+for dev in $(uci -q show wireless | grep "=wifi-device" | cut -d'.' -f2 | cut -d'=' -f1); do
+    uci set wireless.${dev}.disabled='0'
+    if [ "$radio_idx" -eq 0 ]; then
+        # 2.4G 射频
+        uci set wireless.${dev}.country='CN'
+        uci -q set wireless.default_${dev}.ssid='NRadio-C8-688-2.4G'
+        uci -q set wireless.default_${dev}.encryption='none'
+    else
+        # 5G 射频 (160MHz 满血)
+        uci set wireless.${dev}.country='CN'
+        uci set wireless.${dev}.channel='36'
+        uci set wireless.${dev}.htmode='HE160'
+        uci -q set wireless.default_${dev}.ssid='NRadio-C8-688-5G'
+        uci -q set wireless.default_${dev}.encryption='none'
+    fi
+    radio_idx=$((radio_idx + 1))
+done
+
+uci commit wireless
+wifi reload 2>/dev/null || true
+exit 0
+EOF
+chmod +x package/base-files/files/etc/uci-defaults/97-default-wifi
+
+# 11. 注入 5G 模组自适应热插拔、防抖与 netifd 重新加载脚本
 cat << 'EOF' > package/base-files/files/etc/hotplug.d/net/99-modem-auto
 #!/bin/sh
 case "$INTERFACE" in
     usb*|wwan*)
         if [ "$ACTION" = "add" ]; then
-            # 1. 确保 firewall 中放行该接口至 WAN 区域
+            CURRENT_DEV=$(uci -q get network.modem_5g.device)
+            if [ -n "$CURRENT_DEV" ] && [ -d "/sys/class/net/$CURRENT_DEV" ] && [ "$CURRENT_DEV" != "$INTERFACE" ]; then
+                exit 0
+            fi
+
             if uci -q get firewall.@zone[1] >/dev/null; then
                 uci -q del_list firewall.@zone[1].network='modem_5g'
                 uci add_list firewall.@zone[1].network='modem_5g'
@@ -101,22 +152,90 @@ case "$INTERFACE" in
                 /etc/init.d/firewall reload >/dev/null 2>&1
             fi
 
-            # 2. 动态绑定识别到的真实物理网卡并使用 DHCP 协议
             uci set network.modem_5g=interface
             uci set network.modem_5g.proto='dhcp'
             uci set network.modem_5g.device="$INTERFACE"
             uci set network.modem_5g.metric='10'
             uci commit network
 
-            # 3. 延迟拉起网络接口，等待模组初始化完成
-            ( sleep 3; ifup modem_5g ) &
+            /etc/init.d/network reload >/dev/null 2>&1
+            ( sleep 2; ifup modem_5g ) &
         fi
         ;;
 esac
 EOF
 chmod +x package/base-files/files/etc/hotplug.d/net/99-modem-auto
 
-# 9. 重构平台升级脚本：适配上游 sysupgrade-tar 格式并锁死 Slot B
+# 12. 5G 模组掉线自愈看门狗脚本 (/usr/bin/modem_watchdog)
+cat << 'EOF' > package/base-files/files/usr/bin/modem_watchdog
+#!/bin/sh
+# 探测高可用公共 DNS
+DNS_TARGETS="223.5.5.5 119.29.29.29 8.8.8.8"
+FAIL_LOG="/tmp/modem_watchdog_fails"
+[ -f "$FAIL_LOG" ] || echo "0" > "$FAIL_LOG"
+
+is_online=0
+for ip in $DNS_TARGETS; do
+    if ping -c 1 -W 3 -q -I modem_5g "$ip" >/dev/null 2>&1; then
+        is_online=1
+        break
+    fi
+done
+
+if [ "$is_online" -eq 1 ]; then
+    echo "0" > "$FAIL_LOG"
+    exit 0
+fi
+
+# 网络异常，自增失败计数
+FAILS=$(cat "$FAIL_LOG")
+FAILS=$((FAILS + 1))
+echo "$FAILS" > "$FAIL_LOG"
+logger -t "ModemWatchdog" "5G 蜂窝网络不可达，当前连续失败次数: $FAILS"
+
+if [ "$FAILS" -eq 2 ]; then
+    logger -t "ModemWatchdog" "连续 2 次探测超时，正在重启 modem_5g 网络接口..."
+    ifup modem_5g
+elif [ "$FAILS" -ge 4 ]; then
+    logger -t "ModemWatchdog" "连续 4 次探测超时，触发模组硬件 AT 软复位 (CFUN)..."
+    if [ -c /dev/ttyUSB1 ]; then
+        echo -e "AT+CFUN=0\r\n" > /dev/ttyUSB1
+        sleep 3
+        echo -e "AT+CFUN=1\r\n" > /dev/ttyUSB1
+    fi
+    /etc/init.d/network restart
+    echo "0" > "$FAIL_LOG"
+fi
+EOF
+chmod +x package/base-files/files/usr/bin/modem_watchdog
+
+# 将看门狗每 2 分钟执行一次加入 Crontab
+cat << 'EOF' > package/base-files/files/etc/crontabs/root
+*/2 * * * * /usr/bin/modem_watchdog >/dev/null 2>&1
+EOF
+
+# 13. 实体 Reset 按键盲切救砖机制 (长按 10s 以上切回 Slot A)
+cat << 'EOF' > package/base-files/files/etc/rc.button/reset
+#!/bin/sh
+[ "${ACTION}" = "released" ] || exit 0
+. /lib/functions.sh
+
+logger -t "ResetButton" "Reset 实体键被释放，按压持续时间: ${SEEN} 秒"
+
+if [ "$SEEN" -ge 10 ]; then
+    echo "=== [灾难救回] 触发实体按键长按，强制切回原厂主系统 (Slot A) ===" > /dev/console
+    fw_setenv boot_part 1
+    sync
+    reboot
+elif [ "$SEEN" -ge 4 ]; then
+    echo "=== 触发恢复出厂设置 ===" > /dev/console
+    firstboot -y && reboot
+fi
+exit 0
+EOF
+chmod +x package/base-files/files/etc/rc.button/reset
+
+# 14. 平台升级脚本：适配 sysupgrade-tar 并锁死 Slot B
 cat << 'EOF' > package/base-files/files/lib/upgrade/platform.sh
 #!/bin/sh
 RAMFS_COPY_BIN="${RAMFS_COPY_BIN} /usr/sbin/fw_printenv /usr/sbin/fw_setenv /bin/tar"
@@ -124,30 +243,14 @@ RAMFS_COPY_BIN="${RAMFS_COPY_BIN} /usr/sbin/fw_printenv /usr/sbin/fw_setenv /bin
 platform_check_image() {
     local tar_file="$1"
     [ -f "$tar_file" ] || return 1
-
-    if ! tar -tf "$tar_file" >/dev/null 2>&1; then
-        echo "Invalid image: Not a valid sysupgrade archive."
-        return 1
-    fi
+    tar -tf "$tar_file" >/dev/null 2>&1 || return 1
 
     local board_dir=$(tar -tf "$tar_file" | grep -m 1 '^sysupgrade-.*/$')
     board_dir="${board_dir%/}"
+    [ -n "$board_dir" ] || return 1
 
-    if [ -z "$board_dir" ]; then
-        echo "Invalid image: Missing sysupgrade metadata directory."
-        return 1
-    fi
-
-    if ! tar -tf "$tar_file" | grep -q "${board_dir}/kernel"; then
-        echo "Invalid image: Kernel image not found in archive."
-        return 1
-    fi
-
-    if ! tar -tf "$tar_file" | grep -Eq "${board_dir}/(root|rootfs)"; then
-        echo "Invalid image: Rootfs image not found in archive."
-        return 1
-    fi
-
+    tar -tf "$tar_file" | grep -q "${board_dir}/kernel" || return 1
+    tar -tf "$tar_file" | grep -Eq "${board_dir}/(root|rootfs)" || return 1
     return 0
 }
 
@@ -156,12 +259,9 @@ platform_do_upgrade() {
     local board_dir=$(tar -tf "$tar_file" | grep -m 1 '^sysupgrade-.*/$')
     board_dir="${board_dir%/}"
 
-    echo "=== [DualBoot] Upgrading Slot B (Kernel: mmcblk0p8, Rootfs: mmcblk0p9) ==="
-
-    echo "Flashing Kernel to /dev/mmcblk0p8..."
+    echo "=== [DualBoot] 正在刷入副系统 Slot B (Kernel: mmcblk0p8, Rootfs: mmcblk0p9) ==="
     tar -xf "$tar_file" "${board_dir}/kernel" -O > /dev/mmcblk0p8
 
-    echo "Flashing RootFS to /dev/mmcblk0p9..."
     if tar -tf "$tar_file" | grep -q "${board_dir}/rootfs"; then
         tar -xf "$tar_file" "${board_dir}/rootfs" -O > /dev/mmcblk0p9
     elif tar -tf "$tar_file" | grep -q "${board_dir}/root"; then
@@ -175,14 +275,13 @@ platform_do_upgrade() {
 
     rm -f /overlay/upper/etc/expanded_overlay_done 2>/dev/null || true
     rm -f /etc/expanded_overlay_done 2>/dev/null || true
-
     sync
     echo "=== Slot B Upgrade Completed Successfully ==="
 }
 EOF
 chmod +x package/base-files/files/lib/upgrade/platform.sh
 
-# 10. 注入底层 OTA 执行与检查脚本 (/usr/bin/c8_autoupdate)
+# 15. 底层 OTA 执行脚本 (/usr/bin/c8_autoupdate)
 cat << 'EOF' > package/base-files/files/usr/bin/c8_autoupdate
 #!/bin/sh
 REPO="AA9skillz-BN/nradio-c8-688-25.x"
@@ -192,7 +291,7 @@ TMP_IMG="/tmp/sysupgrade.bin"
 echo "=== [OTA] 正在检测 GitHub Release 最新版本 [${REPO}] ==="
 RELEASE_JSON=$(curl -sL --connect-timeout 10 "$API_URL")
 if [ -z "$RELEASE_JSON" ]; then
-    echo "[错误] 无法连接到 GitHub API，请检查网络是否通畅。"
+    echo "[错误] 无法连接到 GitHub API，请检查网络。"
     exit 1
 fi
 
@@ -202,14 +301,13 @@ echo "线上最新版本标签: ${TAG_NAME:-未知}"
 DOWNLOAD_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | test(".*nradio_c8-688.*sysupgrade\\.bin$")) | .browser_download_url' | head -n 1)
 
 if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
-    echo "[错误] 未检测到匹配 NRadio C8-688 的 sysupgrade.bin 固件！"
+    echo "[错误] 未检测到匹配的固件包！"
     exit 1
 fi
 
 echo "固件下载地址: $DOWNLOAD_URL"
-
 if [ "$1" = "check" ]; then
-    echo "=== 检测完毕：有可用固件版本 (${TAG_NAME}) ==="
+    echo "=== 检测完毕：有可用新固件 (${TAG_NAME}) ==="
     exit 0
 fi
 
@@ -218,24 +316,24 @@ rm -f "$TMP_IMG"
 curl -L -k --connect-timeout 15 -o "$TMP_IMG" "$DOWNLOAD_URL"
 
 if [ ! -s "$TMP_IMG" ]; then
-    echo "[错误] 固件下载失败或文件损坏。"
+    echo "[错误] 固件下载失败。"
     exit 1
 fi
 
-echo "固件下载完成，正在进行完整性校验 (sysupgrade -t)..."
+echo "固件完整性校验中..."
 if ! sysupgrade -t "$TMP_IMG"; then
-    echo "[错误] 固件校验不通过，已中止写入！"
+    echo "[错误] 固件校验不通过，已中止！"
     rm -f "$TMP_IMG"
     exit 1
 fi
 
-echo "校验通过！正在写入副系统 Slot B 分区并重启系统..."
+echo "校验通过，正在烧录至 Slot B 并重启..."
 sleep 2
 sysupgrade -n "$TMP_IMG"
 EOF
 chmod +x package/base-files/files/usr/bin/c8_autoupdate
 
-# 11. 专属「在线升级 (AutoUpdate)」独立美观菜单模块
+# 16. LuCI OTA 在线更新控制器
 cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/controller/c8_autoupdate.lua
 module("luci.controller.c8_autoupdate", package.seeall)
 
@@ -248,29 +346,24 @@ function action_index()
     local html = [[
         <div class="cbi-map" id="cbi-autoupdate">
             <h2 name="content">在线更新 (NRadio C8-688)</h2>
-            <div class="cbi-map-descr">当前系统为 DualBoot 架构，一键升级将安全锁定并仅覆盖副系统 (Slot B)，出厂原厂系统物理绝缘免受冲击。</div>
-
+            <div class="cbi-map-descr">当前运行在 DualBoot 架构，一键升级将安全锁定并仅覆盖副系统 (Slot B)，出厂原厂系统物理绝缘免受冲击。</div>
             <fieldset class="cbi-section">
                 <legend>固件升级控制台</legend>
                 <div style="display: flex; gap: 12px; margin-bottom: 16px;">
                     <button class="cbi-button cbi-button-apply" onclick="executeOTA('check')">🔍 仅检查新版本</button>
                     <button class="cbi-button cbi-button-reset" style="background-color: #0072ff; color: #fff;" onclick="if(confirm('确认立即下载并烧录最新固件至 Slot B 吗？完成后设备将自动重启。')) executeOTA('upgrade');">🚀 一键在线升级并重启</button>
                 </div>
-
                 <div id="ota-terminal-box" style="margin-top: 15px;">
                     <label><b>实时升级日志终端：</b></label>
                     <pre id="ota-output" style="background: #1e1e1e; color: #00ff66; padding: 15px; border-radius: 8px; font-family: monospace; height: 320px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;">点击上方按钮开始检测...</pre>
                 </div>
             </fieldset>
-
             <script type="text/javascript">
                 function executeOTA(mode) {
                     var out = document.getElementById('ota-output');
                     out.innerText = (mode === 'check' ? '[任务] 正在查询 GitHub Release 最新固件信息...\n' : '[任务] 启动全自动下载校验与烧录流程...\n');
-                    
                     var xhr = new XMLHttpRequest();
                     xhr.open('GET', ']] .. luci.dispatcher.build_url("admin", "system", "c8_autoupdate", "run") .. [[?mode=' + mode, true);
-                    
                     var lastIndex = 0;
                     xhr.onprogress = function() {
                         var curr = xhr.responseText.substring(lastIndex);
@@ -278,15 +371,8 @@ function action_index()
                         out.innerText += curr;
                         out.scrollTop = out.scrollHeight;
                     };
-                    
-                    xhr.onload = function() {
-                        out.scrollTop = out.scrollHeight;
-                    };
-                    
-                    xhr.onerror = function() {
-                        out.innerText += '\n[网络错误] 请求执行超时或网络中断，请稍后重试。';
-                    };
-                    
+                    xhr.onload = function() { out.scrollTop = out.scrollHeight; };
+                    xhr.onerror = function() { out.innerText += '\n[网络错误] 请求超时或网络中断。'; };
                     xhr.send();
                 }
             </script>
@@ -299,7 +385,6 @@ function action_run()
     local mode = luci.http.formvalue("mode") or "check"
     luci.http.prepare_content("text/plain; charset=utf-8")
     local cmd = (mode == "upgrade") and "/usr/bin/c8_autoupdate" or "/usr/bin/c8_autoupdate check"
-    
     local handle = io.popen(cmd .. " 2>&1")
     if handle then
         while true do
@@ -312,7 +397,7 @@ function action_run()
 end
 EOF
 
-# 12. Web 端双系统切换面板
+# 17. Web 端双系统一键切换面板
 cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/controller/dualboot.lua
 module("luci.controller.dualboot", package.seeall)
 
@@ -324,7 +409,6 @@ end
 function action_dualboot()
     local cur_boot = luci.util.exec("fw_printenv boot_part 2>/dev/null | awk -F'=' '{print $2}'")
     cur_boot = cur_boot and cur_boot:gsub("%s+", "") or "2"
-
     local html = [[
         <div class="cbi-map">
             <h2>双系统引导管理 (NRadio C8-688)</h2>
@@ -355,14 +439,13 @@ function action_switch()
     local cur_boot = luci.util.exec("fw_printenv boot_part 2>/dev/null | awk -F'=' '{print $2}'")
     cur_boot = cur_boot and cur_boot:gsub("%s+", "") or "2"
     local target = (cur_boot == "1") and "2" or "1"
-    
     luci.util.exec("fw_setenv boot_part " .. target)
     luci.http.redirect(luci.dispatcher.build_url("admin", "system", "dualboot"))
     luci.util.exec("(sleep 2 && reboot) &")
 end
 EOF
 
-# 13. 创建“蜂窝网络”顶层分类并配置 MT5700M 模组
+# 18. “蜂窝网络”顶层分类与 MT5700M 模组面板适配
 cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/controller/cellular.lua
 module("luci.controller.cellular", package.seeall)
 
@@ -386,7 +469,7 @@ if [ -d "package/luci-app-mt5700m" ]; then
     done
 fi
 
-# 14. 模组默认串口锁定为 ttyUSB1
+# 19. 模组默认串口锁定为 ttyUSB1
 cat << 'EOF' > package/base-files/files/etc/uci-defaults/98-mt5700m-default
 #!/bin/sh
 if [ -f /etc/config/mt5700m ]; then
@@ -399,7 +482,7 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/98-mt5700m-default
 
-# 15. 拉取风扇温控插件
+# 20. 拉取风扇温控插件
 if [ ! -d "package/luci-app-h5000m-fancontrol" ]; then
     git clone --depth=1 https://github.com/FAN789/luci-app-h5000m-fancontrol.git package/luci-app-h5000m-fancontrol 2>/dev/null || true
 fi
