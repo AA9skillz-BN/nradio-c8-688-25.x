@@ -128,13 +128,15 @@ jobs:
         cd openwrt/bin/targets/*/*
         rm -rf packages
         
-        # 仅安全排除 initramfs，保留实际的 sysupgrade 固件包，避免误删
-        rm -f *initramfs*
+        # 彻底清除 BL2 引导文件、内核镜像调试包、buildinfo 及 profile 元数据
+        rm -f *initramfs* *kernel.bin *-bl2.bin *.buildinfo profiles.json *.manifest
         
         BUILD_VER="$(date +%Y.%m.%d-%H%M)"
         echo "$BUILD_VER" > version.txt
         echo "BUILD_VER=$BUILD_VER" >> $GITHUB_ENV
-        sha256sum immortalwrt-* > sha256sums.txt
+        
+        # 仅针对最终有用的 sysupgrade 固件包生成清晰的哈希校验
+        sha256sum *sysupgrade.bin > sha256sums.txt
         
         echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_OUTPUT
@@ -144,7 +146,10 @@ jobs:
       if: steps.organize.outputs.status == 'success' && env.UPLOAD_FIRMWARE == 'true'
       with:
         name: ImmortalWrt-C8-688-${{ env.BUILD_VER }}
-        path: ${{ env.FIRMWARE_PATH }}
+        path: |
+          ${{ env.FIRMWARE_PATH }}/*sysupgrade.bin
+          ${{ env.FIRMWARE_PATH }}/sha256sums.txt
+          ${{ env.FIRMWARE_PATH }}/version.txt
 
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v2
@@ -165,6 +170,8 @@ jobs:
           * 加速状态: MTK PPE 硬件转发 + FullCone NAT + BBR 拥塞控制
           * 支持在 LuCI 后台【系统】->【在线更新】进行 OTA 升级
         files: |
-          ${{ env.FIRMWARE_PATH }}/*
+          ${{ env.FIRMWARE_PATH }}/*sysupgrade.bin
+          ${{ env.FIRMWARE_PATH }}/sha256sums.txt
+          ${{ env.FIRMWARE_PATH }}/version.txt
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
