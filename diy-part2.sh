@@ -1,6 +1,6 @@
 #!/bin/bash
 # -----------------------------------------------------------------------------
-# DIY script 2: NRadio C8-688 终极全功能工业级脚本
+# DIY script 2: NRadio C8-688 终极全功能工业级脚本 (完整版)
 # 适配 ImmortalWrt 25.x / Linux 6.12 / fw4 (nftables) / DualBoot Slot B
 # -----------------------------------------------------------------------------
 
@@ -108,7 +108,6 @@ cat << 'EOF' > package/base-files/files/etc/uci-defaults/97-default-wifi
 #!/bin/sh
 wifi config 2>/dev/null || true
 
-# 遍历所有射频开启并配置专属 SSID
 radio_idx=0
 for dev in $(uci -q show wireless | grep "=wifi-device" | cut -d'.' -f2 | cut -d'=' -f1); do
     uci set wireless.${dev}.disabled='0'
@@ -169,7 +168,6 @@ chmod +x package/base-files/files/etc/hotplug.d/net/99-modem-auto
 # 12. 5G 模组掉线自愈看门狗脚本 (/usr/bin/modem_watchdog)
 cat << 'EOF' > package/base-files/files/usr/bin/modem_watchdog
 #!/bin/sh
-# 探测高可用公共 DNS
 DNS_TARGETS="223.5.5.5 119.29.29.29 8.8.8.8"
 FAIL_LOG="/tmp/modem_watchdog_fails"
 [ -f "$FAIL_LOG" ] || echo "0" > "$FAIL_LOG"
@@ -187,7 +185,6 @@ if [ "$is_online" -eq 1 ]; then
     exit 0
 fi
 
-# 网络异常，自增失败计数
 FAILS=$(cat "$FAIL_LOG")
 FAILS=$((FAILS + 1))
 echo "$FAILS" > "$FAIL_LOG"
@@ -209,7 +206,6 @@ fi
 EOF
 chmod +x package/base-files/files/usr/bin/modem_watchdog
 
-# 将看门狗每 2 分钟执行一次加入 Crontab
 cat << 'EOF' > package/base-files/files/etc/crontabs/root
 */2 * * * * /usr/bin/modem_watchdog >/dev/null 2>&1
 EOF
@@ -486,5 +482,54 @@ chmod +x package/base-files/files/etc/uci-defaults/98-mt5700m-default
 if [ ! -d "package/luci-app-h5000m-fancontrol" ]; then
     git clone --depth=1 https://github.com/FAN789/luci-app-h5000m-fancontrol.git package/luci-app-h5000m-fancontrol 2>/dev/null || true
 fi
+
+# 21. 拉取短信收发、基站信号看板与 Argon 配置面板
+if [ ! -d "package/luci-app-sms-tool-js" ]; then
+    git clone --depth=1 https://github.com/4IceG/luci-app-sms-tool-js.git package/luci-app-sms-tool-js 2>/dev/null || true
+fi
+if [ ! -d "package/sms-tool" ] && [ ! -d "package/feeds/packages/sms-tool" ]; then
+    git clone --depth=1 https://github.com/4IceG/openwrt-sms-tool.git package/sms-tool 2>/dev/null || true
+fi
+if [ ! -d "package/luci-app-3ginfo-lite" ]; then
+    git clone --depth=1 https://github.com/4IceG/luci-app-3ginfo-lite.git package/luci-app-3ginfo-lite 2>/dev/null || true
+fi
+if [ ! -d "package/luci-app-argon-config" ]; then
+    git clone --depth=1 https://github.com/jerrykuku/luci-app-argon-config.git package/luci-app-argon-config 2>/dev/null || true
+fi
+
+# 22. 将短信收发与 3Ginfo 基站看板自动归入“蜂窝网络”顶层菜单并锁定串口
+if [ -d "package/luci-app-sms-tool-js" ]; then
+    find package/luci-app-sms-tool-js -type f -name "*.lua" -o -name "*.json" | while read -r f; do
+        sed -i 's/"modem"/"cellular"/g' "$f" 2>/dev/null || true
+        sed -i 's/admin\/modem/admin\/cellular/g' "$f" 2>/dev/null || true
+    done
+fi
+
+if [ -d "package/luci-app-3ginfo-lite" ]; then
+    find package/luci-app-3ginfo-lite -type f -name "*.lua" -o -name "*.json" | while read -r f; do
+        sed -i 's/"modem"/"cellular"/g' "$f" 2>/dev/null || true
+        sed -i 's/admin\/modem/admin\/cellular/g' "$f" 2>/dev/null || true
+    done
+fi
+
+cat << 'EOF' > package/base-files/files/etc/uci-defaults/99-cellular-addons-default
+#!/bin/sh
+# 默认锁定短信工具与 3ginfo 串口为 /dev/ttyUSB1
+if [ -f /etc/config/sms_tool ]; then
+    uci -q batch << EOU
+set sms_tool.@sms_tool[0].port='/dev/ttyUSB1'
+commit sms_tool
+EOU
+fi
+
+if [ -f /etc/config/3ginfo ]; then
+    uci -q batch << EOU
+set 3ginfo.@3ginfo[0].device='/dev/ttyUSB1'
+commit 3ginfo
+EOU
+fi
+exit 0
+EOF
+chmod +x package/base-files/files/etc/uci-defaults/99-cellular-addons-default
 
 exit 0
