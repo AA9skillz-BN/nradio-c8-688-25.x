@@ -1,6 +1,6 @@
 #!/bin/bash
 # -----------------------------------------------------------------------------
-# DIY script 2: NRadio C8-688 终极商业级 5G CPE 完整配置脚本
+# DIY script 2: NRadio C8-688 工业级高可靠配置脚本 (彻底修复版)
 # 适配 ImmortalWrt 25.x / Linux 6.12 / fw4 (nftables) / DualBoot Slot B
 # -----------------------------------------------------------------------------
 
@@ -34,7 +34,7 @@ else
     exit 1
 fi
 
-# 2. 向 filogic.mk 追加设备定义 (杜绝路径嵌套报错)
+# 2. 向 filogic.mk 追加设备定义
 FILOGIC_MK="target/linux/mediatek/image/filogic.mk"
 if [ -f "$FILOGIC_MK" ] && ! grep -q "define Device/nradio_c8-688" "$FILOGIC_MK"; then
     echo "Injecting Device/nradio_c8-688 into filogic.mk..."
@@ -45,7 +45,7 @@ define Device/nradio_c8-688
   DEVICE_MODEL := C8-688
   DEVICE_DTS := mt7981b-nradio-c8-688
   SUPPORTED_DEVICES := nradio,c8-688 nradio,c8-668
-  DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware kmod-usb-net-cdc-ether kmod-usb-net-rndis kmod-usb-serial-option
+  DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware kmod-usb-net-cdc-ether kmod-usb-net-rndis kmod-usb-net-cdc-mbim kmod-usb-serial-option
   IMAGES := sysupgrade.bin
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
 endef
@@ -80,7 +80,7 @@ net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
 EOF
 
-# 8. 防火墙出站 TTL 锁定 64 与 TCP MSS 钳制 (防热点限速 + 防蜂窝网络 MTU 断流)
+# 8. 防火墙出站 TTL 锁定 64 与 TCP MSS 钳制
 cat << 'EOF' > package/base-files/files/etc/nftables.d/10-custom-ttl.nft
 table inet fw4 {
     chain forward_mss_clamp {
@@ -118,31 +118,33 @@ uci set dhcp.lan.ra='relay'
 uci set dhcp.lan.dhcpv6='relay'
 uci set dhcp.lan.ndp='relay'
 
-uci -q delete dhcp.modem_5g
-uci set dhcp.modem_5g=dhcp
-uci set dhcp.modem_5g.interface='modem_5g'
-uci set dhcp.modem_5g.ra='relay'
-uci set dhcp.modem_5g.dhcpv6='relay'
-uci set dhcp.modem_5g.ndp='relay'
-uci set dhcp.modem_5g.master='1'
+uci -q delete dhcp.modem_5g_6
+uci set dhcp.modem_5g_6=dhcp
+uci set dhcp.modem_5g_6.interface='modem_5g_6'
+uci set dhcp.modem_5g_6.ra='relay'
+uci set dhcp.modem_5g_6.dhcpv6='relay'
+uci set dhcp.modem_5g_6.ndp='relay'
+uci set dhcp.modem_5g_6.master='1'
 uci commit dhcp
 exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/95-ipv6-relay
 
-# 11. 首次开机自适应扩展 8GB eMMC 分区空间 (/overlay 撑满)
+# 11. 首次开机安全扩展 /overlay 分区
 cat << 'EOF' > package/base-files/files/etc/uci-defaults/96-expand-overlay
 #!/bin/sh
 if [ ! -f /etc/expanded_overlay_done ]; then
-    command -v partx >/dev/null 2>&1 && partx -u /dev/mmcblk0 2>/dev/null || true
-    command -v resize.f2fs >/dev/null 2>&1 && resize.f2fs /dev/mmcblk0p9 2>/dev/null || true
+    OVERLAY_DEV=$(mount | grep ' on /overlay ' | awk '{print $1}')
+    if [ -n "$OVERLAY_DEV" ] && [ -b "$OVERLAY_DEV" ]; then
+        command -v resize.f2fs >/dev/null 2>&1 && resize.f2fs "$OVERLAY_DEV" >/dev/null 2>&1 || true
+    fi
     touch /etc/expanded_overlay_done
 fi
 exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/96-expand-overlay
 
-# 12. 出厂默认开启 Wi-Fi 并设置 160MHz 满血频宽 + 默认密码保护 (防止流量蹭网偷跑)
+# 12. 出厂默认开启 Wi-Fi 并设置 160MHz 满血频宽 + 密码防护
 cat << 'EOF' > package/base-files/files/etc/uci-defaults/97-default-wifi
 #!/bin/sh
 wifi config 2>/dev/null || true
@@ -151,13 +153,11 @@ radio_idx=0
 for dev in $(uci -q show wireless | grep "=wifi-device" | cut -d'.' -f2 | cut -d'=' -f1); do
     uci set wireless.${dev}.disabled='0'
     if [ "$radio_idx" -eq 0 ]; then
-        # 2.4G 射频
         uci set wireless.${dev}.country='CN'
         uci -q set wireless.default_${dev}.ssid='NRadio-C8-688-2.4G'
         uci -q set wireless.default_${dev}.encryption='psk2'
         uci -q set wireless.default_${dev}.key='12345678'
     else
-        # 5G 射频 (160MHz 满血)
         uci set wireless.${dev}.country='CN'
         uci set wireless.${dev}.channel='36'
         uci set wireless.${dev}.htmode='HE160'
@@ -174,27 +174,41 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/97-default-wifi
 
-# 13. 5G 基站 NITZ 自动授时脚本 (解决无纽扣电池断电导致的 1970 年证书死锁)
+# 13. 5G 基站 NITZ 自动授时 (集成原子排他锁与 BusyBox 语法)
 cat << 'EOF' > package/base-files/files/usr/bin/modem_nitz_sync
 #!/bin/sh
 PORT="/dev/ttyUSB1"
 [ -c "$PORT" ] || exit 0
-
 command -v sms_tool >/dev/null 2>&1 || exit 0
+
+LOCKDIR="/var/lock/modem_at.lock"
+acquired=0
+for i in $(seq 1 10); do
+    if mkdir "$LOCKDIR" 2>/dev/null; then
+        acquired=1
+        break
+    fi
+    sleep 0.5
+done
+
+[ "$acquired" -eq 1 ] || exit 1
+trap 'rm -rf "$LOCKDIR"' EXIT
+
 RESP=$(sms_tool -d "$PORT" at "AT+CCLK?" 2>/dev/null | grep -i "+CCLK:" | head -n 1)
 
 if [ -n "$RESP" ]; then
     RAW_TIME=$(echo "$RESP" | sed -n 's/.*"\([0-9\/]*,[0-9:]*\).*/\1/p')
     if [ -n "$RAW_TIME" ]; then
-        FORMATTED_TIME=$(echo "$RAW_TIME" | awk -F'[/,]' '{print "20"$1"-"$2"-"$3" "$4}')
-        date -s "$FORMATTED_TIME" >/dev/null 2>&1
+        FORMATTED_TIME=$(echo "$RAW_TIME" | awk -F'[/,:]' '{printf "%02d%02d%02d%02d20%02d.%02d", $2, $3, $4, $5, $1, $6}')
+        date "$FORMATTED_TIME" >/dev/null 2>&1 || date -s "$FORMATTED_TIME" >/dev/null 2>&1
         logger -t "NITZ" "已成功同步 5G 基站网络时间: $FORMATTED_TIME"
     fi
 fi
+rm -rf "$LOCKDIR"
 EOF
 chmod +x package/base-files/files/usr/bin/modem_nitz_sync
 
-# 14. 注入 5G 模组自适应热插拔、防抖与 netifd/odhcpd/NITZ 联动脚本
+# 14. 注入 5G 模组自适应热插拔、双栈 (IPv4/IPv6) 与 netifd/odhcpd/NITZ 联动脚本
 cat << 'EOF' > package/base-files/files/etc/hotplug.d/net/99-modem-auto
 #!/bin/sh
 case "$INTERFACE" in
@@ -208,6 +222,8 @@ case "$INTERFACE" in
             if uci -q get firewall.@zone[1] >/dev/null; then
                 uci -q del_list firewall.@zone[1].network='modem_5g'
                 uci add_list firewall.@zone[1].network='modem_5g'
+                uci -q del_list firewall.@zone[1].network='modem_5g_6'
+                uci add_list firewall.@zone[1].network='modem_5g_6'
                 uci commit firewall
                 /etc/init.d/firewall reload >/dev/null 2>&1
             fi
@@ -216,18 +232,24 @@ case "$INTERFACE" in
             uci set network.modem_5g.proto='dhcp'
             uci set network.modem_5g.device="$INTERFACE"
             uci set network.modem_5g.metric='10'
+
+            uci set network.modem_5g_6=interface
+            uci set network.modem_5g_6.proto='dhcpv6'
+            uci set network.modem_5g_6.device="$INTERFACE"
+            uci set network.modem_5g_6.reqaddress='try'
+            uci set network.modem_5g_6.reqprefix='auto'
             uci commit network
 
             /etc/init.d/network reload >/dev/null 2>&1
             /etc/init.d/odhcpd reload >/dev/null 2>&1
-            ( sleep 2; ifup modem_5g; sleep 3; /usr/bin/modem_nitz_sync ) &
+            ( sleep 2; ifup modem_5g; ifup modem_5g_6; sleep 3; /usr/bin/modem_nitz_sync ) &
         fi
         ;;
 esac
 EOF
 chmod +x package/base-files/files/etc/hotplug.d/net/99-modem-auto
 
-# 15. 5G 模组掉线自愈看门狗脚本 (/usr/bin/modem_watchdog)
+# 15. 5G 模组掉线自愈看门狗脚本 (集成原子锁)
 cat << 'EOF' > package/base-files/files/usr/bin/modem_watchdog
 #!/bin/sh
 DNS_TARGETS="223.5.5.5 119.29.29.29 8.8.8.8"
@@ -253,14 +275,23 @@ echo "$FAILS" > "$FAIL_LOG"
 logger -t "ModemWatchdog" "5G 蜂窝网络不可达，当前连续失败次数: $FAILS"
 
 if [ "$FAILS" -eq 2 ]; then
-    logger -t "ModemWatchdog" "连续 2 次探测超时，正在重启 modem_5g 网络接口..."
+    logger -t "ModemWatchdog" "连续 2 次探测超时，正在重启网络接口..."
     ifup modem_5g
+    ifup modem_5g_6
 elif [ "$FAILS" -ge 4 ]; then
     logger -t "ModemWatchdog" "连续 4 次探测超时，触发模组硬件 AT 软复位 (CFUN)..."
     if [ -c /dev/ttyUSB1 ]; then
-        echo -e "AT+CFUN=0\r\n" > /dev/ttyUSB1
-        sleep 3
-        echo -e "AT+CFUN=1\r\n" > /dev/ttyUSB1
+        LOCKDIR="/var/lock/modem_at.lock"
+        for i in $(seq 1 10); do
+            if mkdir "$LOCKDIR" 2>/dev/null; then
+                echo -e "AT+CFUN=0\r\n" > /dev/ttyUSB1
+                sleep 3
+                echo -e "AT+CFUN=1\r\n" > /dev/ttyUSB1
+                rm -rf "$LOCKDIR"
+                break
+            fi
+            sleep 0.5
+        done
     fi
     /etc/init.d/network restart
     /etc/init.d/odhcpd restart >/dev/null 2>&1
@@ -295,8 +326,7 @@ EOF
 chmod +x package/base-files/files/etc/rc.button/reset
 
 # 17. 平台升级脚本：适配 sysupgrade-tar 并锁死 Slot B
-cat << 'EOF' > package/base-files/files/lib/upgrade/platform.sh
-#!/bin/sh
+PLATFORM_SCRIPT='#!/bin/sh
 RAMFS_COPY_BIN="${RAMFS_COPY_BIN} /usr/sbin/fw_printenv /usr/sbin/fw_setenv /bin/tar"
 
 platform_check_image() {
@@ -304,7 +334,7 @@ platform_check_image() {
     [ -f "$tar_file" ] || return 1
     tar -tf "$tar_file" >/dev/null 2>&1 || return 1
 
-    local board_dir=$(tar -tf "$tar_file" | grep -m 1 '^sysupgrade-.*/$')
+    local board_dir=$(tar -tf "$tar_file" | grep -m 1 "^sysupgrade-.*/$")
     board_dir="${board_dir%/}"
     [ -n "$board_dir" ] || return 1
 
@@ -315,7 +345,7 @@ platform_check_image() {
 
 platform_do_upgrade() {
     local tar_file="$1"
-    local board_dir=$(tar -tf "$tar_file" | grep -m 1 '^sysupgrade-.*/$')
+    local board_dir=$(tar -tf "$tar_file" | grep -m 1 "^sysupgrade-.*/$")
     board_dir="${board_dir%/}"
 
     echo "=== [DualBoot] 正在刷入副系统 Slot B (Kernel: mmcblk0p8, Rootfs: mmcblk0p9) ==="
@@ -337,8 +367,16 @@ platform_do_upgrade() {
     sync
     echo "=== Slot B Upgrade Completed Successfully ==="
 }
-EOF
+'
+
+# 双重注入：写入通用目录与目标 Target 专用目录，确保最终打包不被覆盖
+echo "$PLATFORM_SCRIPT" > package/base-files/files/lib/upgrade/platform.sh
 chmod +x package/base-files/files/lib/upgrade/platform.sh
+
+TARGET_UPGRADE_DIR="target/linux/mediatek/filogic/base-files/lib/upgrade"
+mkdir -p "$TARGET_UPGRADE_DIR"
+echo "$PLATFORM_SCRIPT" > "$TARGET_UPGRADE_DIR/platform.sh"
+chmod +x "$TARGET_UPGRADE_DIR/platform.sh"
 
 # 18. 底层 OTA 执行脚本 (/usr/bin/c8_autoupdate)
 cat << 'EOF' > package/base-files/files/usr/bin/c8_autoupdate
