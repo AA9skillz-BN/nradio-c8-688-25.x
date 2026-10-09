@@ -70,6 +70,7 @@ uci set fstab.@mount[-1].target='/mnt/data'
 uci set fstab.@mount[-1].enabled='1'
 uci commit fstab
 /etc/init.d/fstab reload
+```
 ---
 ## 🤝 致谢与鸣谢 (Acknowledgments)
 本项目在方案设计、代码实现与功能调试过程中，深度参考并整合了以下开源项目与社区贡献者的杰出成果。在此向所有开源作者致以崇高的敬意：
