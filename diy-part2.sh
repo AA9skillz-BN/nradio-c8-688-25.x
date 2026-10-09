@@ -2,6 +2,7 @@
 # -----------------------------------------------------------------------------
 # DIY script 2: NRadio C8-688 纯净稳定版构建脚本
 # 适配 ImmortalWrt 25.x / Linux 6.12 / fw4 (nftables) / DualBoot Slot B
+# 包含：7GB eMMC 自动扩展满 Overlay / 动效升级 / 双系统切换 / 5G 模组防死锁
 # -----------------------------------------------------------------------------
 
 [ -d "openwrt" ] && cd openwrt
@@ -198,7 +199,7 @@ if [ -n "$RESP" ]; then
     RAW_TIME=$(echo "$RESP" | sed -n 's/.*"\([0-9\/]*,[0-9:]*\).*/\1/p')
     if [ -n "$RAW_TIME" ]; then
         FORMATTED_TIME=$(echo "$RAW_TIME" | awk -F'[/,:]' '{printf "%02d%02d%02d%02d20%02d.%02d", $2, $3, $4, $5, $1, $6}')
-        date "$FORMATTED_TIME" >/dev/null 2>&1 || date -s "$FORMATTED_TIME" >/dev/null 2>&1
+        date "$FORMATTED_TIME" >/dev/null 2>&1 \vert{}\vert{} date -s "$FORMATTED_TIME" >/dev/null 2>&1
         logger -t "NITZ" "已成功同步 5G 基站网络时间: $FORMATTED_TIME"
     fi
 fi
@@ -253,7 +254,7 @@ cat << 'EOF' > package/base-files/files/usr/bin/modem_watchdog
 #!/bin/sh
 DNS_TARGETS="223.5.5.5 119.29.29.29 8.8.8.8"
 FAIL_LOG="/tmp/modem_watchdog_fails"
-[ -f "$FAIL_LOG" ] || echo "0" > "$FAIL_LOG"
+[ -f "$FAIL_LOG" ] \vert{}\vert{} echo "0" > "$FAIL_LOG"
 
 is_online=0
 for ip in $DNS_TARGETS; do
@@ -334,26 +335,26 @@ platform_check_image() {
     [ -f "$tar_file" ] || return 1
     tar -tf "$tar_file" >/dev/null 2>&1 || return 1
 
-    local board_dir=$(tar -tf "$tar_file" | grep -m 1 "^sysupgrade-.*/$")
+    local board_dir=$(tar -tf "$tar_file" \vert{} grep -m 1 "^sysupgrade-.*/$")
     board_dir="${board_dir%/}"
     [ -n "$board_dir" ] || return 1
 
-    tar -tf "$tar_file" | grep -q "${board_dir}/kernel" || return 1
-    tar -tf "$tar_file" | grep -Eq "${board_dir}/(root|rootfs)" || return 1
+    tar -tf "$tar_file" \vert{} grep -q "${board_dir}/kernel" || return 1
+    tar -tf "$tar_file" \vert{} grep -Eq "${board_dir}/(root|rootfs)" || return 1
     return 0
 }
 
 platform_do_upgrade() {
     local tar_file="$1"
-    local board_dir=$(tar -tf "$tar_file" | grep -m 1 "^sysupgrade-.*/$")
+    local board_dir=$(tar -tf "$tar_file" \vert{} grep -m 1 "^sysupgrade-.*/$")
     board_dir="${board_dir%/}"
 
     echo "=== [DualBoot] 正在刷入副系统 Slot B (Kernel: mmcblk0p8, Rootfs: mmcblk0p9) ==="
     tar -xf "$tar_file" "${board_dir}/kernel" -O > /dev/mmcblk0p8
 
-    if tar -tf "$tar_file" | grep -q "${board_dir}/rootfs"; then
+    if tar -tf "$tar_file" \vert{} grep -q "${board_dir}/rootfs"; then
         tar -xf "$tar_file" "${board_dir}/rootfs" -O > /dev/mmcblk0p9
-    elif tar -tf "$tar_file" | grep -q "${board_dir}/root"; then
+    elif tar -tf "$tar_file" \vert{} grep -q "${board_dir}/root"; then
         tar -xf "$tar_file" "${board_dir}/root" -O > /dev/mmcblk0p9
     fi
 
@@ -392,9 +393,9 @@ fi
 TAG_NAME=$(echo "$RELEASE_JSON" | jq -r '.tag_name // empty')
 echo "线上最新版本标签: ${TAG_NAME:-未知}"
 
-DOWNLOAD_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | test(".*nradio_c8-688.*sysupgrade\\.bin$")) | .browser_download_url' | head -n 1)
+DOWNLOAD_URL=$(echo "$RELEASE_JSON" \vert{} jq -r '.assets[] \vert{} select(.name \vert{} test(".*nradio_c8-688.*sysupgrade\\.bin$")) | .browser_download_url' | head -n 1)
 
-if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
+if [ -z "$DOWNLOAD_URL" ] \vert{}\vert{} [ "$DOWNLOAD_URL" = "null" ]; then
     echo "[错误] 未检测到匹配的固件包！"
     exit 1
 fi
@@ -683,84 +684,4 @@ function action_dualboot()
                     seconds--;
                     if (seconds <= 0) {
                         clearInterval(timer);
-                        location.href = 'http://' + window.location.hostname;
-                    } else {
-                        timerEl.innerText = seconds;
-                    }
-                }, 1000);
-
-                var xhr = new XMLHttpRequest();
-                xhr.open('GET', ']] .. luci.dispatcher.build_url("admin", "system", "dualboot", "switch") .. [[', true);
-                xhr.send();
-            }
-        </script>
-    ]]
-    luci.template.render_string(html)
-end
-
-function action_switch()
-    local cur_boot = luci.util.exec("fw_printenv boot_part 2>/dev/null | awk -F'=' '{print $2}'")
-    cur_boot = cur_boot and cur_boot:gsub("%s+", "") or "2"
-    local target = (cur_boot == "1") and "2" or "1"
-    luci.util.exec("fw_setenv boot_part " .. target)
-    luci.http.prepare_content("text/plain")
-    luci.http.write("OK")
-    luci.util.exec("(sleep 2 && sync && reboot) &")
-end
-EOF
-
-# 20. 拉取 MT5700M 模组控制面板
-if [ ! -d "package/luci-app-mt5700m" ]; then
-    git clone --depth=1 https://github.com/FAN789/luci-app-mt5700m.git package/luci-app-mt5700m 2>/dev/null || true
-fi
-
-# 21. 模组默认串口锁定为 ttyUSB1
-cat << 'EOF' > package/base-files/files/etc/uci-defaults/98-mt5700m-default
-#!/bin/sh
-if [ -f /etc/config/mt5700m ]; then
-    uci -q batch << EOU
-set mt5700m.@mt5700m[0].port='/dev/ttyUSB1'
-commit mt5700m
-EOU
-fi
-exit 0
-EOF
-chmod +x package/base-files/files/etc/uci-defaults/98-mt5700m-default
-
-# 22. 拉取风扇温控插件
-if [ ! -d "package/luci-app-h5000m-fancontrol" ]; then
-    git clone --depth=1 https://github.com/FAN789/luci-app-h5000m-fancontrol.git package/luci-app-h5000m-fancontrol 2>/dev/null || true
-fi
-
-# 23. 拉取短信收发与基站看板
-if [ ! -d "package/luci-app-sms-tool-js" ]; then
-    git clone --depth=1 https://github.com/4IceG/luci-app-sms-tool-js.git package/luci-app-sms-tool-js 2>/dev/null || true
-fi
-if [ ! -d "package/sms-tool" ] && [ ! -d "package/feeds/packages/sms-tool" ]; then
-    git clone --depth=1 https://github.com/4IceG/openwrt-sms-tool.git package/sms-tool 2>/dev/null || true
-fi
-if [ ! -d "package/luci-app-3ginfo-lite" ]; then
-    git clone --depth=1 https://github.com/4IceG/luci-app-3ginfo-lite.git package/luci-app-3ginfo-lite 2>/dev/null || true
-fi
-
-# 24. 规范短信收发与 3Ginfo 基站看板的默认通信串口为 ttyUSB1
-cat << 'EOF' > package/base-files/files/etc/uci-defaults/99-cellular-addons-default
-#!/bin/sh
-if [ -f /etc/config/sms_tool ]; then
-    uci -q batch << EOU
-set sms_tool.@sms_tool[0].port='/dev/ttyUSB1'
-commit sms_tool
-EOU
-fi
-
-if [ -f /etc/config/3ginfo ]; then
-    uci -q batch << EOU
-set 3ginfo.@3ginfo[0].device='/dev/ttyUSB1'
-commit 3ginfo
-EOU
-fi
-exit 0
-EOF
-chmod +x package/base-files/files/etc/uci-defaults/99-cellular-addons-default
-
-exit 0
+                        location.href = 'http://' + window.location.hostname
