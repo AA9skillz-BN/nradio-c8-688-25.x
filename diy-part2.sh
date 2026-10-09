@@ -427,7 +427,7 @@ sysupgrade -n "$TMP_IMG"
 EOF
 chmod +x package/base-files/files/usr/bin/c8_autoupdate
 
-# 18. LuCI OTA 在线更新控制器
+# 18. LuCI OTA 在线更新控制器 (全屏极客动效 + 实时流式终端 + 75秒探活重连)
 cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/controller/c8_autoupdate.lua
 module("luci.controller.c8_autoupdate", package.seeall)
 
@@ -438,35 +438,137 @@ end
 
 function action_index()
     local html = [[
+        <style>
+            #ota-reboot-overlay {
+                display: none;
+                position: fixed;
+                top: 0; left: 0; width: 100vw; height: 100vh;
+                background: rgba(15, 23, 42, 0.94);
+                backdrop-filter: blur(10px);
+                z-index: 99999;
+                flex-direction: column;
+                justify-content: center;
+                align-items: center;
+                color: #fff;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            }
+            .ota-spinner {
+                width: 68px;
+                height: 68px;
+                border: 4px solid rgba(255, 255, 255, 0.12);
+                border-top: 4px solid #10b981;
+                border-radius: 50%;
+                animation: ota-spin 1s cubic-bezier(0.55, 0.15, 0.45, 0.85) infinite;
+                margin-bottom: 24px;
+            }
+            @keyframes ota-spin {
+                0% { transform: rotate(0deg); }
+                100% { transform: rotate(360deg); }
+            }
+            .ota-title { font-size: 22px; font-weight: 600; margin-bottom: 10px; color: #f8fafc; }
+            .ota-desc { font-size: 14px; color: #94a3b8; margin-bottom: 20px; }
+            .ota-timer { font-size: 16px; font-weight: 500; color: #34d399; }
+        </style>
+
+        <div id="ota-reboot-overlay">
+            <div class="ota-spinner"></div>
+            <div class="ota-title">固件烧录完毕，正在重启设备...</div>
+            <div class="ota-desc">Slot B 新系统正在初始化，硬件重新加载中，请勿切断电源</div>
+            <div class="ota-timer">预计就绪倒计时：<span id="ota-countdown">75</span> 秒</div>
+        </div>
+
         <div class="cbi-map" id="cbi-autoupdate">
             <h2 name="content">在线更新 (NRadio C8-688)</h2>
             <div class="cbi-map-descr">当前运行在 DualBoot 架构，一键升级将安全锁定并仅覆盖副系统 (Slot B)，出厂原厂系统物理绝缘免受冲击。</div>
             <fieldset class="cbi-section">
                 <legend>固件升级控制台</legend>
                 <div style="display: flex; gap: 12px; margin-bottom: 16px;">
-                    <button class="cbi-button cbi-button-apply" onclick="executeOTA('check')">🔍 仅检查新版本</button>
-                    <button class="cbi-button cbi-button-reset" style="background-color: #0072ff; color: #fff;" onclick="if(confirm('确认立即下载并烧录最新固件至 Slot B 吗？完成后设备将自动重启。')) executeOTA('upgrade');">🚀 一键在线升级并重启</button>
+                    <button id="btn-check" class="cbi-button cbi-button-apply" style="padding: 6px 18px;" onclick="executeOTA('check')">🔍 仅检查新版本</button>
+                    <button id="btn-upgrade" class="cbi-button cbi-button-reset" style="background-color: #0072ff; color: #fff; padding: 6px 18px;" onclick="startUpgrade()">🚀 一键在线升级并重启</button>
                 </div>
                 <div id="ota-terminal-box" style="margin-top: 15px;">
                     <label><b>实时升级日志终端：</b></label>
-                    <pre id="ota-output" style="background: #1e1e1e; color: #00ff66; padding: 15px; border-radius: 8px; font-family: monospace; height: 320px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;">点击上方按钮开始检测...</pre>
+                    <pre id="ota-output" style="background: #111827; color: #10b981; padding: 15px; border-radius: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 13px; line-height: 1.5; height: 340px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; border: 1px solid #374151;">点击上方按钮开始检测...</pre>
                 </div>
             </fieldset>
             <script type="text/javascript">
+                function startUpgrade() {
+                    if (!confirm('确认立即从 GitHub Release 下载最新固件并烧录至 Slot B 吗？\n升级写入完成后设备将自动重启。')) {
+                        return;
+                    }
+                    executeOTA('upgrade');
+                }
+
+                function triggerRebootOverlay() {
+                    var overlay = document.getElementById('ota-reboot-overlay');
+                    overlay.style.display = 'flex';
+                    var seconds = 75;
+                    var timerEl = document.getElementById('ota-countdown');
+                    var timer = setInterval(function() {
+                        seconds--;
+                        if (seconds <= 0) {
+                            clearInterval(timer);
+                            timerEl.innerText = '正在尝试重新接入系统...';
+                            checkAndRedirect();
+                        } else {
+                            timerEl.innerText = seconds;
+                        }
+                    }, 1000);
+                }
+
+                function checkAndRedirect() {
+                    var interval = setInterval(function() {
+                        var ping = new Image();
+                        ping.onload = function() {
+                            clearInterval(interval);
+                            location.href = 'http://' + window.location.hostname;
+                        };
+                        ping.src = 'http://' + window.location.hostname + '/luci-static/resources/cbi.css?t=' + new Date().getTime();
+                    }, 3000);
+                }
+
                 function executeOTA(mode) {
                     var out = document.getElementById('ota-output');
-                    out.innerText = (mode === 'check' ? '[任务] 正在查询 GitHub Release 最新固件信息...\n' : '[任务] 启动全自动下载校验与烧录流程...\n');
+                    var btnCheck = document.getElementById('btn-check');
+                    var btnUp = document.getElementById('btn-upgrade');
+                    
+                    btnCheck.disabled = true;
+                    btnUp.disabled = true;
+                    out.innerText = (mode === 'check' ? '[任务] 正在查询 GitHub Release 最新固件信息...\n' : '[任务] 启动全自动下载、校验与烧录流程...\n');
+                    
                     var xhr = new XMLHttpRequest();
                     xhr.open('GET', ']] .. luci.dispatcher.build_url("admin", "system", "c8_autoupdate", "run") .. [[?mode=' + mode, true);
                     var lastIndex = 0;
+                    
                     xhr.onprogress = function() {
                         var curr = xhr.responseText.substring(lastIndex);
                         lastIndex = xhr.responseText.length;
                         out.innerText += curr;
                         out.scrollTop = out.scrollHeight;
+
+                        if (curr.indexOf('正在烧录') !== -1 || curr.indexOf('Rebooting') !== -1 || curr.indexOf('sysupgrade') !== -1) {
+                            setTimeout(triggerRebootOverlay, 2500);
+                        }
                     };
-                    xhr.onload = function() { out.scrollTop = out.scrollHeight; };
-                    xhr.onerror = function() { out.innerText += '\n[网络错误] 请求超时或网络中断。'; };
+                    
+                    xhr.onload = function() {
+                        out.scrollTop = out.scrollHeight;
+                        btnCheck.disabled = false;
+                        btnUp.disabled = false;
+                        if (mode === 'upgrade' && out.innerText.indexOf('校验通过') !== -1) {
+                            triggerRebootOverlay();
+                        }
+                    };
+                    
+                    xhr.onerror = function() {
+                        if (mode === 'upgrade') {
+                            triggerRebootOverlay();
+                        } else {
+                            out.innerText += '\n[网络错误] 请求超时或与设备通信中断。';
+                            btnCheck.disabled = false;
+                            btnUp.disabled = false;
+                        }
+                    };
                     xhr.send();
                 }
             </script>
@@ -491,7 +593,7 @@ function action_run()
 end
 EOF
 
-# 19. Web 端双系统一键切换面板
+# 19. Web 端双系统一键切换面板 (全屏遮罩 + 75秒平滑重启倒计时)
 cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/controller/dualboot.lua
 module("luci.controller.dualboot", package.seeall)
 
@@ -504,27 +606,94 @@ function action_dualboot()
     local cur_boot = luci.util.exec("fw_printenv boot_part 2>/dev/null | awk -F'=' '{print $2}'")
     cur_boot = cur_boot and cur_boot:gsub("%s+", "") or "2"
     local html = [[
+        <style>
+            #boot-overlay {
+                display: none;
+                position: fixed;
+                top: 0; left: 0; width: 100vw; height: 100vh;
+                background: rgba(15, 23, 42, 0.92);
+                backdrop-filter: blur(8px);
+                z-index: 99999;
+                flex-direction: column;
+                justify-content: center;
+                align-items: center;
+                color: #fff;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            }
+            .boot-spinner {
+                width: 64px;
+                height: 64px;
+                border: 4px solid rgba(255, 255, 255, 0.15);
+                border-top: 4px solid #0072ff;
+                border-radius: 50%;
+                animation: spin 1s cubic-bezier(0.55, 0.15, 0.45, 0.85) infinite;
+                margin-bottom: 24px;
+            }
+            @keyframes spin {
+                0% { transform: rotate(0deg); }
+                100% { transform: rotate(360deg); }
+            }
+            .boot-title { font-size: 22px; font-weight: 600; margin-bottom: 8px; letter-spacing: 0.5px; }
+            .boot-desc { font-size: 14px; color: #94a3b8; margin-bottom: 20px; }
+            .boot-timer { font-size: 16px; font-weight: 500; color: #38bdf8; }
+        </style>
+
+        <div id="boot-overlay">
+            <div class="boot-spinner"></div>
+            <div class="boot-title">正在切换引导槽位并重启路由器...</div>
+            <div class="boot-desc">硬件正在写入 U-Boot 引导寄存器，请勿切断路由器电源</div>
+            <div class="boot-timer">预计剩余等待时间：<span id="countdown">75</span> 秒</div>
+        </div>
+
         <div class="cbi-map">
             <h2>双系统引导管理 (NRadio C8-688)</h2>
-            <div class="cbi-map-descr">当前设备支持 A/B 双槽位无损切换。</div>
+            <div class="cbi-map-descr">当前设备支持 A/B 双槽位物理无损切换。</div>
             <fieldset class="cbi-section">
                 <legend>系统槽位状态</legend>
                 <table class="cbi-section-table">
                     <tr class="cbi-section-table-row">
                         <td><b>当前运行槽位：</b></td>
-                        <td style="color: green; font-weight: bold;">]] .. (cur_boot == "1" and "主系统 (Slot A / 原厂)" or "副系统 (Slot B / ImmortalWrt)") .. [[</td>
+                        <td style="color: #10b981; font-weight: bold; font-size: 15px;">]] .. (cur_boot == "1" and "主系统 (Slot A / 原厂出厂系统)" or "副系统 (Slot B / ImmortalWrt)") .. [[</td>
                     </tr>
                     <tr class="cbi-section-table-row">
                         <td><b>操作：</b></td>
                         <td>
-                            <button class="cbi-button cbi-button-apply" onclick="location.href=']] .. luci.dispatcher.build_url("admin", "system", "dualboot", "switch") .. [['">
-                                ]] .. (cur_boot == "1" and "切换到副系统 (Slot B)" or "一键切回原厂主系统 (Slot A)") .. [[
+                            <button class="cbi-button cbi-button-apply" style="padding: 6px 18px;" onclick="triggerSwitch()">
+                                ]] .. (cur_boot == "1" and "🚀 切换到副系统 (Slot B)" or "🔄 一键切回原厂主系统 (Slot A)") .. [[
                             </button>
                         </td>
                     </tr>
                 </table>
             </fieldset>
         </div>
+
+        <script type="text/javascript">
+            function triggerSwitch() {
+                var targetSlot = "]] .. (cur_boot == "1" and "副系统 (Slot B)" or "原厂主系统 (Slot A)") .. [[";
+                if (!confirm("确认立即切换至 " + targetSlot + " 并自动重启吗？\n切换过程请保持设备供电正常。")) {
+                    return;
+                }
+
+                var overlay = document.getElementById('boot-overlay');
+                overlay.style.display = 'flex';
+
+                var seconds = 75;
+                var timerEl = document.getElementById('countdown');
+                var timer = setInterval(function() {
+                    seconds--;
+                    if (seconds <= 0) {
+                        clearInterval(timer);
+                        location.href = 'http://' + window.location.hostname;
+                    } else {
+                        timerEl.innerText = seconds;
+                    }
+                }, 1000);
+
+                var xhr = new XMLHttpRequest();
+                xhr.open('GET', ']] .. luci.dispatcher.build_url("admin", "system", "dualboot", "switch") .. [[', true);
+                xhr.send();
+            }
+        </script>
     ]]
     luci.template.render_string(html)
 end
@@ -534,8 +703,9 @@ function action_switch()
     cur_boot = cur_boot and cur_boot:gsub("%s+", "") or "2"
     local target = (cur_boot == "1") and "2" or "1"
     luci.util.exec("fw_setenv boot_part " .. target)
-    luci.http.redirect(luci.dispatcher.build_url("admin", "system", "dualboot"))
-    luci.util.exec("(sleep 2 && reboot) &")
+    luci.http.prepare_content("text/plain")
+    luci.http.write("OK")
+    luci.util.exec("(sleep 2 && sync && reboot) &")
 end
 EOF
 
