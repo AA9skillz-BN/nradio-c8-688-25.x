@@ -34,7 +34,7 @@ else
     exit 1
 fi
 
-# 2. 向 filogic.mk 追加设备定义
+# 2. 向 filogic.mk 追加设备定义 (补齐 SOC 关联，确保镜像构建管道完整)
 FILOGIC_MK="target/linux/mediatek/image/filogic.mk"
 if [ -f "$FILOGIC_MK" ] && ! grep -q "define Device/nradio_c8-688" "$FILOGIC_MK"; then
     echo "Injecting Device/nradio_c8-688 into filogic.mk..."
@@ -44,6 +44,8 @@ define Device/nradio_c8-688
   DEVICE_VENDOR := NRadio
   DEVICE_MODEL := C8-688
   DEVICE_DTS := mt7981b-nradio-c8-688
+  DEVICE_DTS_DIR := $(DTS_DIR)/mediatek
+  SOC := mt7981
   SUPPORTED_DEVICES := nradio,c8-688 nradio,c8-668
   DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware kmod-usb-net-cdc-ether kmod-usb-net-rndis kmod-usb-net-cdc-mbim kmod-usb-serial-option
   IMAGES := sysupgrade.bin
@@ -69,14 +71,16 @@ mkdir -p package/base-files/files/lib/upgrade
 mkdir -p package/base-files/files/usr/bin
 mkdir -p package/base-files/files/usr/lib/lua/luci/controller
 
-# 6. 配置 U-Boot 环境变量映射文件 (增加兼容性检测逻辑)
+# 6. 配置 U-Boot 环境变量映射文件 (增加多重容错探测逻辑)
 cat << 'EOF' > package/base-files/files/etc/uci-defaults/01-fw-env-detect
 #!/bin/sh
-# 优先检测是否存在独立的 ubootenv 分区
 if [ -b "/dev/mmcblk0p2" ] && grep -qi "ubootenv" /proc/partitions 2>/dev/null; then
     echo "/dev/mmcblk0p2 0x0 0x80000" > /etc/fw_env.config
 elif [ ! -f /etc/fw_env.config ]; then
-    echo "/dev/mmcblk0 0x100000 0x80000" > /etc/fw_env.config
+    cat << 'CONF' > /etc/fw_env.config
+/dev/mmcblk0 0x100000 0x80000 0x80000
+/dev/mmcblk0 0x180000 0x80000 0x80000
+CONF
 fi
 exit 0
 EOF
@@ -233,6 +237,7 @@ case "$INTERFACE" in
             uci set network.modem_5g_6.device="$INTERFACE"
             uci set network.modem_5g_6.reqaddress='try'
             uci set network.modem_5g_6.reqprefix='auto'
+            uci set network.modem_5g_6.metric='10'
             uci commit network
 
             /etc/init.d/network reload >/dev/null 2>&1
@@ -558,7 +563,7 @@ if [ ! -d "package/luci-app-h5000m-fancontrol" ]; then
     git clone --depth=1 https://github.com/FAN789/luci-app-h5000m-fancontrol.git package/luci-app-h5000m-fancontrol 2>/dev/null || true
 fi
 
-# 23. 拉取短信收发与基站看板（注意：Argon 已在 diy-part1 处理，此处不再重复克隆）
+# 23. 拉取短信收发与基站看板
 if [ ! -d "package/luci-app-sms-tool-js" ]; then
     git clone --depth=1 https://github.com/4IceG/luci-app-sms-tool-js.git package/luci-app-sms-tool-js 2>/dev/null || true
 fi
