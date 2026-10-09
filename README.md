@@ -70,14 +70,18 @@ uci set fstab.@mount[-1].target='/mnt/data'
 uci set fstab.@mount[-1].enabled='1'
 uci commit fstab
 /etc/init.d/fstab reload
-
 ---
-## 🤝 致谢与鸣谢
-​本项目在开发与适配过程中，参考并使用了以下开源项目与社区贡献者的成果，在此表示衷心感谢：
-​ImmortalWrt Project - 极其优秀的 OpenWrt 衍生分支与构建框架
-​FAN789/luci-app-mt5700m - 联发科 MT5700M 5G 模组控制面板
-​FAN789/luci-app-h5000m-fancontrol - CPE 智能温控风扇控制组件
-​Hyy2001X/luci-app-autoupdate - 在线固件检测与升级逻辑参考
-​4IceG/luci-app-sms-tool-js - 网页端短信收发与管理工具
-​4IceG/luci-app-3ginfo-lite - 蜂窝基站与信号详情监控面板
-​jerrykuku/luci-theme-argon - 现代化 Material Design LuCI 主题
+## 🤝 致谢与鸣谢 (Acknowledgments)
+本项目在方案设计、代码实现与功能调试过程中，深度参考并整合了以下开源项目与社区贡献者的杰出成果。在此向所有开源作者致以崇高的敬意：
+
+| 开源项目 / 依赖组件 | 原作者 / 仓库链接 | 主要用途与技术贡献 |
+| :--- | :--- | :--- |
+| **ImmortalWrt** | [immortalwrt/immortalwrt](https://github.com/immortalwrt/immortalwrt) | 提供现代化的 OpenWrt 底层源码树与 MediaTek 目标构建工具链 |
+| **luci-app-mt5700m** | [FAN789/luci-app-mt5700m](https://github.com/FAN789/luci-app-mt5700m) | 提供 MT5700M 模组的核心控制、频段锁定与网页 AT 交互面板 |
+| **luci-app-h5000m-fancontrol** | [FAN789/luci-app-h5000m-fancontrol](https://github.com/FAN789/luci-app-h5000m-fancontrol) | 提供硬件 PWM 智能温控风扇策略面板与底层驱动适配 |
+| **luci-app-autoupdate** | [Hyy2001X/luci-app-autoupdate](https://github.com/Hyy2001X/luci-app-autoupdate) | 提供 GitHub Release 固件检测、哈希校验与 OTA 架构思路 |
+| **luci-app-sms-tool-js** | [4IceG/luci-app-sms-tool-js](https://github.com/4IceG/luci-app-sms-tool-js) | 提供基于 JavaScript 的轻量化 Web 端短信收发与管理界面 |
+| **luci-app-3ginfo-lite** | [4IceG/luci-app-3ginfo-lite](https://github.com/4IceG/luci-app-3ginfo-lite) | 提供蜂窝网络基站小区（PCI）、RSRP、SINR 实时信号看板 |
+| **luci-theme-argon** | [jerrykuku/luci-theme-argon](https://github.com/jerrykuku/luci-theme-argon) | 提供现代化 Material Design 视觉主题与深色模式支持 |
+
+> 特别感谢 **OpenWrt** / **Linux MediaTek Filogic** 开源社区的长期技术积累与驱动支持。
