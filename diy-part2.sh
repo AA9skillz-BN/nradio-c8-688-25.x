@@ -34,7 +34,7 @@ else
     exit 1
 fi
 
-# 2. 向 filogic.mk 追加设备定义 (补齐 SOC 关联，确保镜像构建管道完整)
+# 2. 向 filogic.mk 追加设备定义 (彻底剔除多余的 DEVICE_DTS_DIR，杜绝路径重复嵌套报错)
 FILOGIC_MK="target/linux/mediatek/image/filogic.mk"
 if [ -f "$FILOGIC_MK" ] && ! grep -q "define Device/nradio_c8-688" "$FILOGIC_MK"; then
     echo "Injecting Device/nradio_c8-688 into filogic.mk..."
@@ -44,7 +44,6 @@ define Device/nradio_c8-688
   DEVICE_VENDOR := NRadio
   DEVICE_MODEL := C8-688
   DEVICE_DTS := mt7981b-nradio-c8-688
-  DEVICE_DTS_DIR := $(DTS_DIR)/mediatek
   SOC := mt7981
   SUPPORTED_DEVICES := nradio,c8-688 nradio,c8-668
   DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware kmod-usb-net-cdc-ether kmod-usb-net-rndis kmod-usb-net-cdc-mbim kmod-usb-serial-option
