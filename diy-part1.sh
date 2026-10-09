@@ -5,7 +5,7 @@
 
 [ -d "openwrt" ] && cd openwrt
 
-# 1. 引入 Argon 主题与配置面板（适配 25.x 最新前端渲染）
+# 1. 引入 Argon 主题与配置面板
 if [ ! -d "package/custom/luci-theme-argon" ]; then
     echo "Cloning luci-theme-argon..."
     git clone --depth=1 -b master https://github.com/jerrykuku/luci-theme-argon.git package/custom/luci-theme-argon 2>/dev/null || true
