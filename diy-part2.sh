@@ -2,7 +2,7 @@
 # -----------------------------------------------------------------------------
 # DIY script 2: NRadio C8-688 纯净稳定版构建脚本
 # 适配 ImmortalWrt 25.x / Linux 6.12 / fw4 (nftables) / DualBoot Slot B
-# 包含：7GB eMMC 自动扩展满 Overlay / 动效升级 / 双系统切换 / 5G 模组防死锁
+# 包含：7GB Overlay 自动扩容 / 动效升级 / 双系统切换 / 5G 模组防并发锁
 # -----------------------------------------------------------------------------
 
 [ -d "openwrt" ] && cd openwrt
@@ -92,18 +92,16 @@ net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
 EOF
 
-# 8. 防火墙出站 TTL 锁定 64 与 TCP MSS 钳制
+# 8. 防火墙出站 TTL 锁定 64 (兼容 fw4 内部 include 语法规则，移除多余外层 table 声明)
 cat << 'EOF' > package/base-files/files/etc/nftables.d/10-custom-ttl.nft
-table inet fw4 {
-    chain forward_mss_clamp {
-        type filter hook forward priority 0; policy accept;
-        tcp flags syn tcp option maxseg size set rt mtu
-    }
-    chain postrouting_mangle_ttl {
-        type filter hook postrouting priority 300; policy accept;
-        ip ttl set 64
-        ip6 hoplimit set 64
-    }
+chain forward_mss_clamp {
+    type filter hook forward priority 0; policy accept;
+    tcp flags syn tcp option maxseg size set rt mtu
+}
+chain postrouting_mangle_ttl {
+    type filter hook postrouting priority 300; policy accept;
+    ip ttl set 64
+    ip6 hoplimit set 64
 }
 EOF
 
@@ -199,7 +197,7 @@ if [ -n "$RESP" ]; then
     RAW_TIME=$(echo "$RESP" | sed -n 's/.*"\([0-9\/]*,[0-9:]*\).*/\1/p')
     if [ -n "$RAW_TIME" ]; then
         FORMATTED_TIME=$(echo "$RAW_TIME" | awk -F'[/,:]' '{printf "%02d%02d%02d%02d20%02d.%02d", $2, $3, $4, $5, $1, $6}')
-        date "$FORMATTED_TIME" >/dev/null 2>&1 \vert{}\vert{} date -s "$FORMATTED_TIME" >/dev/null 2>&1
+        date "$FORMATTED_TIME" >/dev/null 2>&1 || date -s "$FORMATTED_TIME" >/dev/null 2>&1
         logger -t "NITZ" "已成功同步 5G 基站网络时间: $FORMATTED_TIME"
     fi
 fi
@@ -249,16 +247,22 @@ esac
 EOF
 chmod +x package/base-files/files/etc/hotplug.d/net/99-modem-auto
 
-# 14. 5G 模组掉线自愈看门狗脚本
+# 14. 5G 模组掉线自愈看门狗脚本 (精准网卡设备绑定与容错探针)
 cat << 'EOF' > package/base-files/files/usr/bin/modem_watchdog
 #!/bin/sh
 DNS_TARGETS="223.5.5.5 119.29.29.29 8.8.8.8"
 FAIL_LOG="/tmp/modem_watchdog_fails"
-[ -f "$FAIL_LOG" ] \vert{}\vert{} echo "0" > "$FAIL_LOG"
+[ -f "$FAIL_LOG" ] || echo "0" > "$FAIL_LOG"
+
+DEV=$(uci -q get network.modem_5g.device)
+PING_DEV_OPT=""
+if [ -n "$DEV" ] && [ -d "/sys/class/net/$DEV" ]; then
+    PING_DEV_OPT="-I $DEV"
+fi
 
 is_online=0
 for ip in $DNS_TARGETS; do
-    if ping -c 1 -W 3 -q -I modem_5g "$ip" >/dev/null 2>&1; then
+    if ping -c 1 -W 3 -q $PING_DEV_OPT "$ip" >/dev/null 2>&1; then
         is_online=1
         break
     fi
@@ -335,26 +339,26 @@ platform_check_image() {
     [ -f "$tar_file" ] || return 1
     tar -tf "$tar_file" >/dev/null 2>&1 || return 1
 
-    local board_dir=$(tar -tf "$tar_file" \vert{} grep -m 1 "^sysupgrade-.*/$")
+    local board_dir=$(tar -tf "$tar_file" | grep -m 1 "^sysupgrade-.*/$")
     board_dir="${board_dir%/}"
     [ -n "$board_dir" ] || return 1
 
-    tar -tf "$tar_file" \vert{} grep -q "${board_dir}/kernel" || return 1
-    tar -tf "$tar_file" \vert{} grep -Eq "${board_dir}/(root|rootfs)" || return 1
+    tar -tf "$tar_file" | grep -q "${board_dir}/kernel" || return 1
+    tar -tf "$tar_file" | grep -Eq "${board_dir}/(root|rootfs)" || return 1
     return 0
 }
 
 platform_do_upgrade() {
     local tar_file="$1"
-    local board_dir=$(tar -tf "$tar_file" \vert{} grep -m 1 "^sysupgrade-.*/$")
+    local board_dir=$(tar -tf "$tar_file" | grep -m 1 "^sysupgrade-.*/$")
     board_dir="${board_dir%/}"
 
     echo "=== [DualBoot] 正在刷入副系统 Slot B (Kernel: mmcblk0p8, Rootfs: mmcblk0p9) ==="
     tar -xf "$tar_file" "${board_dir}/kernel" -O > /dev/mmcblk0p8
 
-    if tar -tf "$tar_file" \vert{} grep -q "${board_dir}/rootfs"; then
+    if tar -tf "$tar_file" | grep -q "${board_dir}/rootfs"; then
         tar -xf "$tar_file" "${board_dir}/rootfs" -O > /dev/mmcblk0p9
-    elif tar -tf "$tar_file" \vert{} grep -q "${board_dir}/root"; then
+    elif tar -tf "$tar_file" | grep -q "${board_dir}/root"; then
         tar -xf "$tar_file" "${board_dir}/root" -O > /dev/mmcblk0p9
     fi
 
@@ -376,7 +380,7 @@ mkdir -p "$TARGET_UPGRADE_DIR"
 echo "$PLATFORM_SCRIPT" > "$TARGET_UPGRADE_DIR/platform.sh"
 chmod +x "$TARGET_UPGRADE_DIR/platform.sh"
 
-# 17. 底层 OTA 执行脚本
+# 17. 底层 OTA 执行脚本 (保留配置平滑升级)
 cat << 'EOF' > package/base-files/files/usr/bin/c8_autoupdate
 #!/bin/sh
 REPO="AA9skillz-BN/nradio-c8-688-25.x"
@@ -393,9 +397,9 @@ fi
 TAG_NAME=$(echo "$RELEASE_JSON" | jq -r '.tag_name // empty')
 echo "线上最新版本标签: ${TAG_NAME:-未知}"
 
-DOWNLOAD_URL=$(echo "$RELEASE_JSON" \vert{} jq -r '.assets[] \vert{} select(.name \vert{} test(".*nradio_c8-688.*sysupgrade\\.bin$")) | .browser_download_url' | head -n 1)
+DOWNLOAD_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | test(".*nradio_c8-688.*sysupgrade\\.bin$")) | .browser_download_url' | head -n 1)
 
-if [ -z "$DOWNLOAD_URL" ] \vert{}\vert{} [ "$DOWNLOAD_URL" = "null" ]; then
+if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
     echo "[错误] 未检测到匹配的固件包！"
     exit 1
 fi
@@ -422,9 +426,9 @@ if ! sysupgrade -t "$TMP_IMG"; then
     exit 1
 fi
 
-echo "校验通过，正在烧录至 Slot B 并重启..."
+echo "校验通过，正在烧录至 Slot B (保留已有配置并重启)..."
 sleep 2
-sysupgrade -n "$TMP_IMG"
+sysupgrade "$TMP_IMG"
 EOF
 chmod +x package/base-files/files/usr/bin/c8_autoupdate
 
@@ -684,4 +688,120 @@ function action_dualboot()
                     seconds--;
                     if (seconds <= 0) {
                         clearInterval(timer);
-                        location.href = 'http://' + window.location.hostname
+                        location.href = 'http://' + window.location.hostname;
+                    } else {
+                        timerEl.innerText = seconds;
+                    }
+                }, 1000);
+
+                var xhr = new XMLHttpRequest();
+                xhr.open('GET', ']] .. luci.dispatcher.build_url("admin", "system", "dualboot", "switch") .. [[', true);
+                xhr.send();
+            }
+        </script>
+    ]]
+    luci.template.render_string(html)
+end
+
+function action_switch()
+    local cur_boot = luci.util.exec("fw_printenv boot_part 2>/dev/null | awk -F'=' '{print $2}'")
+    cur_boot = cur_boot and cur_boot:gsub("%s+", "") or "2"
+    local target = (cur_boot == "1") and "2" or "1"
+    luci.util.exec("fw_setenv boot_part " .. target)
+    luci.http.prepare_content("text/plain")
+    luci.http.write("OK")
+    luci.util.exec("(sleep 2 && sync && reboot) &")
+end
+EOF
+
+# 20. 自动将剩余 7GB eMMC (mmcblk0p10) 扩充为软件安装分区 (/overlay)
+cat << 'EOF' > package/base-files/files/etc/uci-defaults/99-auto-expand-overlay
+#!/bin/sh
+DATA_DEV="/dev/mmcblk0p10"
+
+if [ -b "$DATA_DEV" ]; then
+    if ! blkid "$DATA_DEV" | grep -qi "f2fs"; then
+        mkfs.f2fs -f -l data "$DATA_DEV"
+    fi
+
+    if ! uci -q show fstab | grep -q "$DATA_DEV"; then
+        mkdir -p /tmp/ext_data
+        mount -t f2fs "$DATA_DEV" /tmp/ext_data
+        
+        if [ -d "/overlay/upper" ]; then
+            cp -a /overlay/* /tmp/ext_data/ 2>/dev/null || true
+        fi
+        umount /tmp/ext_data
+        rm -rf /tmp/ext_data
+
+        uci -q delete fstab.overlay
+        uci set fstab.overlay=mount
+        uci set fstab.overlay.device="$DATA_DEV"
+        uci set fstab.overlay.target='/overlay'
+        uci set fstab.overlay.enabled='1'
+        uci commit fstab
+
+        ( sleep 2 && sync && reboot ) &
+    fi
+fi
+exit 0
+EOF
+chmod +x package/base-files/files/etc/uci-defaults/99-auto-expand-overlay
+
+# 21. 拉取 MT5700M 模组控制面板
+if [ ! -d "package/luci-app-mt5700m" ]; then
+    git clone --depth=1 https://github.com/FAN789/luci-app-mt5700m.git package/luci-app-mt5700m 2>/dev/null || true
+fi
+
+# 22. 模组默认串口锁定为 ttyUSB1
+cat << 'EOF' > package/base-files/files/etc/uci-defaults/98-mt5700m-default
+#!/bin/sh
+if [ -f /etc/config/mt5700m ]; then
+    uci -q batch << EOU
+set mt5700m.@mt5700m[0].port='/dev/ttyUSB1'
+commit mt5700m
+EOU
+fi
+exit 0
+EOF
+chmod +x package/base-files/files/etc/uci-defaults/98-mt5700m-default
+
+# 23. 拉取风扇温控插件
+if [ ! -d "package/luci-app-h5000m-fancontrol" ]; then
+    git clone --depth=1 https://github.com/FAN789/luci-app-h5000m-fancontrol.git package/luci-app-h5000m-fancontrol 2>/dev/null || true
+fi
+
+# 24. 拉取短信收发与基站看板
+if [ ! -d "package/luci-app-sms-tool-js" ]; then
+    git clone --depth=1 https://github.com/4IceG/luci-app-sms-tool-js.git package/luci-app-sms-tool-js 2>/dev/null || true
+fi
+if [ ! -d "package/sms-tool" ] && [ ! -d "package/feeds/packages/sms-tool" ]; then
+    git clone --depth=1 https://github.com/4IceG/openwrt-sms-tool.git package/sms-tool 2>/dev/null || true
+fi
+if [ ! -d "package/luci-app-3ginfo-lite" ]; then
+    git clone --depth=1 https://github.com/4IceG/luci-app-3ginfo-lite.git package/luci-app-3ginfo-lite 2>/dev/null || true
+fi
+
+# 25. 规范短信收发与 3Ginfo 基站看板的默认通信串口 (适配 sms-tool-js 配置节点)
+cat << 'EOF' > package/base-files/files/etc/uci-defaults/99-cellular-addons-default
+#!/bin/sh
+if [ -f /etc/config/sms_tool ]; then
+    uci -q batch << EOU
+set sms_tool.main=sms_tool
+set sms_tool.main.read_port='/dev/ttyUSB1'
+set sms_tool.main.send_port='/dev/ttyUSB1'
+commit sms_tool
+EOU
+fi
+
+if [ -f /etc/config/3ginfo ]; then
+    uci -q batch << EOU
+set 3ginfo.@3ginfo[0].device='/dev/ttyUSB1'
+commit 3ginfo
+EOU
+fi
+exit 0
+EOF
+chmod +x package/base-files/files/etc/uci-defaults/99-cellular-addons-default
+
+exit 0
