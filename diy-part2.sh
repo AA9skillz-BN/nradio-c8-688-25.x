@@ -69,10 +69,18 @@ mkdir -p package/base-files/files/lib/upgrade
 mkdir -p package/base-files/files/usr/bin
 mkdir -p package/base-files/files/usr/lib/lua/luci/controller
 
-# 6. 配置 U-Boot 环境变量映射文件 (供 dualboot 与 OTA 使用)
-cat << 'EOF' > package/base-files/files/etc/fw_env.config
-/dev/mmcblk0            0x100000        0x80000
+# 6. 配置 U-Boot 环境变量映射文件 (增加兼容性检测逻辑)
+cat << 'EOF' > package/base-files/files/etc/uci-defaults/01-fw-env-detect
+#!/bin/sh
+# 优先检测是否存在独立的 ubootenv 分区
+if [ -b "/dev/mmcblk0p2" ] && grep -qi "ubootenv" /proc/partitions 2>/dev/null; then
+    echo "/dev/mmcblk0p2 0x0 0x80000" > /etc/fw_env.config
+elif [ ! -f /etc/fw_env.config ]; then
+    echo "/dev/mmcblk0 0x100000 0x80000" > /etc/fw_env.config
+fi
+exit 0
 EOF
+chmod +x package/base-files/files/etc/uci-defaults/01-fw-env-detect
 
 # 7. 实装 TCP BBR 拥塞控制与 FQ 队列调度
 cat << 'EOF' >> package/base-files/files/etc/sysctl.conf
@@ -195,7 +203,7 @@ rm -rf "$LOCKDIR"
 EOF
 chmod +x package/base-files/files/usr/bin/modem_nitz_sync
 
-# 13. 注入 5G 模组自适应热插拔、双栈 (IPv4/IPv6) 与 netifd/odhcpd/NITZ 联动脚本
+# 13. 注入 5G 模组自适应热插拔与双栈网络支持
 cat << 'EOF' > package/base-files/files/etc/hotplug.d/net/99-modem-auto
 #!/bin/sh
 case "$INTERFACE" in
@@ -236,7 +244,7 @@ esac
 EOF
 chmod +x package/base-files/files/etc/hotplug.d/net/99-modem-auto
 
-# 14. 5G 模组掉线自愈看门狗脚本 (集成原子锁与自动解除死锁)
+# 14. 5G 模组掉线自愈看门狗脚本
 cat << 'EOF' > package/base-files/files/usr/bin/modem_watchdog
 #!/bin/sh
 DNS_TARGETS="223.5.5.5 119.29.29.29 8.8.8.8"
@@ -292,7 +300,7 @@ cat << 'EOF' > package/base-files/files/etc/crontabs/root
 */2 * * * * /usr/bin/modem_watchdog >/dev/null 2>&1
 EOF
 
-# 15. 实体 Reset 按键盲切救砖机制 (长按 10s 以上切回 Slot A)
+# 15. 实体 Reset 按键盲切救砖机制
 cat << 'EOF' > package/base-files/files/etc/rc.button/reset
 #!/bin/sh
 [ "${ACTION}" = "released" ] || exit 0
@@ -355,7 +363,6 @@ platform_do_upgrade() {
 }
 '
 
-# 双重注入：写入通用目录与目标 Target 专用目录，确保最终打包不被覆盖
 echo "$PLATFORM_SCRIPT" > package/base-files/files/lib/upgrade/platform.sh
 chmod +x package/base-files/files/lib/upgrade/platform.sh
 
@@ -364,7 +371,7 @@ mkdir -p "$TARGET_UPGRADE_DIR"
 echo "$PLATFORM_SCRIPT" > "$TARGET_UPGRADE_DIR/platform.sh"
 chmod +x "$TARGET_UPGRADE_DIR/platform.sh"
 
-# 17. 底层 OTA 执行脚本 (/usr/bin/c8_autoupdate)
+# 17. 底层 OTA 执行脚本
 cat << 'EOF' > package/base-files/files/usr/bin/c8_autoupdate
 #!/bin/sh
 REPO="AA9skillz-BN/nradio-c8-688-25.x"
@@ -551,7 +558,7 @@ if [ ! -d "package/luci-app-h5000m-fancontrol" ]; then
     git clone --depth=1 https://github.com/FAN789/luci-app-h5000m-fancontrol.git package/luci-app-h5000m-fancontrol 2>/dev/null || true
 fi
 
-# 23. 拉取短信收发、基站信号看板与 Argon 配置面板
+# 23. 拉取短信收发与基站看板（注意：Argon 已在 diy-part1 处理，此处不再重复克隆）
 if [ ! -d "package/luci-app-sms-tool-js" ]; then
     git clone --depth=1 https://github.com/4IceG/luci-app-sms-tool-js.git package/luci-app-sms-tool-js 2>/dev/null || true
 fi
@@ -560,9 +567,6 @@ if [ ! -d "package/sms-tool" ] && [ ! -d "package/feeds/packages/sms-tool" ]; th
 fi
 if [ ! -d "package/luci-app-3ginfo-lite" ]; then
     git clone --depth=1 https://github.com/4IceG/luci-app-3ginfo-lite.git package/luci-app-3ginfo-lite 2>/dev/null || true
-fi
-if [ ! -d "package/luci-app-argon-config" ]; then
-    git clone --depth=1 https://github.com/jerrykuku/luci-app-argon-config.git package/luci-app-argon-config 2>/dev/null || true
 fi
 
 # 24. 规范短信收发与 3Ginfo 基站看板的默认通信串口为 ttyUSB1
