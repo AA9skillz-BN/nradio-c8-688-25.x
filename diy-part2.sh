@@ -1,6 +1,6 @@
 #!/bin/bash
 # -----------------------------------------------------------------------------
-# DIY script 2: NRadio C8-688 工业级高可靠配置脚本 (彻底修复版)
+# DIY script 2: NRadio C8-688 纯净稳定版构建脚本
 # 适配 ImmortalWrt 25.x / Linux 6.12 / fw4 (nftables) / DualBoot Slot B
 # -----------------------------------------------------------------------------
 
@@ -130,21 +130,7 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/95-ipv6-relay
 
-# 11. 首次开机安全扩展 /overlay 分区
-cat << 'EOF' > package/base-files/files/etc/uci-defaults/96-expand-overlay
-#!/bin/sh
-if [ ! -f /etc/expanded_overlay_done ]; then
-    OVERLAY_DEV=$(mount | grep ' on /overlay ' | awk '{print $1}')
-    if [ -n "$OVERLAY_DEV" ] && [ -b "$OVERLAY_DEV" ]; then
-        command -v resize.f2fs >/dev/null 2>&1 && resize.f2fs "$OVERLAY_DEV" >/dev/null 2>&1 || true
-    fi
-    touch /etc/expanded_overlay_done
-fi
-exit 0
-EOF
-chmod +x package/base-files/files/etc/uci-defaults/96-expand-overlay
-
-# 12. 出厂默认开启 Wi-Fi 并设置 160MHz 满血频宽 + 密码防护
+# 11. 出厂默认开启 Wi-Fi 并设置 160MHz 满血频宽 + 密码防护
 cat << 'EOF' > package/base-files/files/etc/uci-defaults/97-default-wifi
 #!/bin/sh
 wifi config 2>/dev/null || true
@@ -174,7 +160,7 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/97-default-wifi
 
-# 13. 5G 基站 NITZ 自动授时 (集成原子排他锁与 BusyBox 语法)
+# 12. 5G 基站 NITZ 自动授时 (集成原子排他锁与进程捕获)
 cat << 'EOF' > package/base-files/files/usr/bin/modem_nitz_sync
 #!/bin/sh
 PORT="/dev/ttyUSB1"
@@ -182,6 +168,8 @@ PORT="/dev/ttyUSB1"
 command -v sms_tool >/dev/null 2>&1 || exit 0
 
 LOCKDIR="/var/lock/modem_at.lock"
+trap 'rm -rf "$LOCKDIR"' EXIT INT TERM
+
 acquired=0
 for i in $(seq 1 10); do
     if mkdir "$LOCKDIR" 2>/dev/null; then
@@ -192,7 +180,6 @@ for i in $(seq 1 10); do
 done
 
 [ "$acquired" -eq 1 ] || exit 1
-trap 'rm -rf "$LOCKDIR"' EXIT
 
 RESP=$(sms_tool -d "$PORT" at "AT+CCLK?" 2>/dev/null | grep -i "+CCLK:" | head -n 1)
 
@@ -208,7 +195,7 @@ rm -rf "$LOCKDIR"
 EOF
 chmod +x package/base-files/files/usr/bin/modem_nitz_sync
 
-# 14. 注入 5G 模组自适应热插拔、双栈 (IPv4/IPv6) 与 netifd/odhcpd/NITZ 联动脚本
+# 13. 注入 5G 模组自适应热插拔、双栈 (IPv4/IPv6) 与 netifd/odhcpd/NITZ 联动脚本
 cat << 'EOF' > package/base-files/files/etc/hotplug.d/net/99-modem-auto
 #!/bin/sh
 case "$INTERFACE" in
@@ -249,7 +236,7 @@ esac
 EOF
 chmod +x package/base-files/files/etc/hotplug.d/net/99-modem-auto
 
-# 15. 5G 模组掉线自愈看门狗脚本 (集成原子锁)
+# 14. 5G 模组掉线自愈看门狗脚本 (集成原子锁与自动解除死锁)
 cat << 'EOF' > package/base-files/files/usr/bin/modem_watchdog
 #!/bin/sh
 DNS_TARGETS="223.5.5.5 119.29.29.29 8.8.8.8"
@@ -282,6 +269,7 @@ elif [ "$FAILS" -ge 4 ]; then
     logger -t "ModemWatchdog" "连续 4 次探测超时，触发模组硬件 AT 软复位 (CFUN)..."
     if [ -c /dev/ttyUSB1 ]; then
         LOCKDIR="/var/lock/modem_at.lock"
+        trap 'rm -rf "$LOCKDIR"' EXIT INT TERM
         for i in $(seq 1 10); do
             if mkdir "$LOCKDIR" 2>/dev/null; then
                 echo -e "AT+CFUN=0\r\n" > /dev/ttyUSB1
@@ -304,7 +292,7 @@ cat << 'EOF' > package/base-files/files/etc/crontabs/root
 */2 * * * * /usr/bin/modem_watchdog >/dev/null 2>&1
 EOF
 
-# 16. 实体 Reset 按键盲切救砖机制 (长按 10s 以上切回 Slot A)
+# 15. 实体 Reset 按键盲切救砖机制 (长按 10s 以上切回 Slot A)
 cat << 'EOF' > package/base-files/files/etc/rc.button/reset
 #!/bin/sh
 [ "${ACTION}" = "released" ] || exit 0
@@ -325,7 +313,7 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/rc.button/reset
 
-# 17. 平台升级脚本：适配 sysupgrade-tar 并锁死 Slot B
+# 16. 平台升级脚本：适配 sysupgrade-tar 并锁死 Slot B
 PLATFORM_SCRIPT='#!/bin/sh
 RAMFS_COPY_BIN="${RAMFS_COPY_BIN} /usr/sbin/fw_printenv /usr/sbin/fw_setenv /bin/tar"
 
@@ -362,8 +350,6 @@ platform_do_upgrade() {
         fw_setenv boot_part 2 2>/dev/null || true
     fi
 
-    rm -f /overlay/upper/etc/expanded_overlay_done 2>/dev/null || true
-    rm -f /etc/expanded_overlay_done 2>/dev/null || true
     sync
     echo "=== Slot B Upgrade Completed Successfully ==="
 }
@@ -378,7 +364,7 @@ mkdir -p "$TARGET_UPGRADE_DIR"
 echo "$PLATFORM_SCRIPT" > "$TARGET_UPGRADE_DIR/platform.sh"
 chmod +x "$TARGET_UPGRADE_DIR/platform.sh"
 
-# 18. 底层 OTA 执行脚本 (/usr/bin/c8_autoupdate)
+# 17. 底层 OTA 执行脚本 (/usr/bin/c8_autoupdate)
 cat << 'EOF' > package/base-files/files/usr/bin/c8_autoupdate
 #!/bin/sh
 REPO="AA9skillz-BN/nradio-c8-688-25.x"
@@ -430,7 +416,7 @@ sysupgrade -n "$TMP_IMG"
 EOF
 chmod +x package/base-files/files/usr/bin/c8_autoupdate
 
-# 19. LuCI OTA 在线更新控制器
+# 18. LuCI OTA 在线更新控制器
 cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/controller/c8_autoupdate.lua
 module("luci.controller.c8_autoupdate", package.seeall)
 
@@ -494,7 +480,7 @@ function action_run()
 end
 EOF
 
-# 20. Web 端双系统一键切换面板
+# 19. Web 端双系统一键切换面板
 cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/controller/dualboot.lua
 module("luci.controller.dualboot", package.seeall)
 
@@ -542,31 +528,12 @@ function action_switch()
 end
 EOF
 
-# 21. “蜂窝网络”顶层分类与 MT5700M 模组面板适配
-cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/controller/cellular.lua
-module("luci.controller.cellular", package.seeall)
-
-function index()
-    entry({"admin", "cellular"}, firstchild(), _("蜂窝网络"), 25).dependent = false
-end
-EOF
-
+# 20. 拉取 MT5700M 模组控制面板
 if [ ! -d "package/luci-app-mt5700m" ]; then
     git clone --depth=1 https://github.com/FAN789/luci-app-mt5700m.git package/luci-app-mt5700m 2>/dev/null || true
 fi
 
-if [ -d "package/luci-app-mt5700m" ]; then
-    find package/luci-app-mt5700m -type f -name "*.lua" | while read -r f; do
-        sed -i 's/entry({"admin", "modem"/entry({"admin", "cellular"/g' "$f" 2>/dev/null || true
-        sed -i 's/entry({"admin", "network", "mt5700m"/entry({"admin", "cellular", "mt5700m"/g' "$f" 2>/dev/null || true
-        sed -i 's/entry({"admin", "network", "mt5700"/entry({"admin", "cellular", "mt5700"/g' "$f" 2>/dev/null || true
-    done
-    find package/luci-app-mt5700m -type f \( -name "*.lua" -o -name "*.sh" -o -name "*.js" \) | while read -r f; do
-        sed -i 's/ttyUSB2/ttyUSB1/g' "$f" 2>/dev/null || true
-    done
-fi
-
-# 22. 模组默认串口锁定为 ttyUSB1
+# 21. 模组默认串口锁定为 ttyUSB1
 cat << 'EOF' > package/base-files/files/etc/uci-defaults/98-mt5700m-default
 #!/bin/sh
 if [ -f /etc/config/mt5700m ]; then
@@ -579,12 +546,12 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/98-mt5700m-default
 
-# 23. 拉取风扇温控插件
+# 22. 拉取风扇温控插件
 if [ ! -d "package/luci-app-h5000m-fancontrol" ]; then
     git clone --depth=1 https://github.com/FAN789/luci-app-h5000m-fancontrol.git package/luci-app-h5000m-fancontrol 2>/dev/null || true
 fi
 
-# 24. 拉取短信收发、基站信号看板与 Argon 配置面板
+# 23. 拉取短信收发、基站信号看板与 Argon 配置面板
 if [ ! -d "package/luci-app-sms-tool-js" ]; then
     git clone --depth=1 https://github.com/4IceG/luci-app-sms-tool-js.git package/luci-app-sms-tool-js 2>/dev/null || true
 fi
@@ -598,21 +565,7 @@ if [ ! -d "package/luci-app-argon-config" ]; then
     git clone --depth=1 https://github.com/jerrykuku/luci-app-argon-config.git package/luci-app-argon-config 2>/dev/null || true
 fi
 
-# 25. 将短信收发与 3Ginfo 基站看板自动归入“蜂窝网络”顶层菜单并锁定串口
-if [ -d "package/luci-app-sms-tool-js" ]; then
-    find package/luci-app-sms-tool-js -type f -name "*.lua" -o -name "*.json" | while read -r f; do
-        sed -i 's/"modem"/"cellular"/g' "$f" 2>/dev/null || true
-        sed -i 's/admin\/modem/admin\/cellular/g' "$f" 2>/dev/null || true
-    done
-fi
-
-if [ -d "package/luci-app-3ginfo-lite" ]; then
-    find package/luci-app-3ginfo-lite -type f -name "*.lua" -o -name "*.json" | while read -r f; do
-        sed -i 's/"modem"/"cellular"/g' "$f" 2>/dev/null || true
-        sed -i 's/admin\/modem/admin\/cellular/g' "$f" 2>/dev/null || true
-    done
-fi
-
+# 24. 规范短信收发与 3Ginfo 基站看板的默认通信串口为 ttyUSB1
 cat << 'EOF' > package/base-files/files/etc/uci-defaults/99-cellular-addons-default
 #!/bin/sh
 if [ -f /etc/config/sms_tool ]; then
