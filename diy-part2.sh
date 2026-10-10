@@ -69,7 +69,7 @@ mkdir -p package/base-files/files/lib/upgrade
 mkdir -p package/base-files/files/usr/bin
 mkdir -p package/base-files/files/usr/lib/lua/luci/controller
 
-# 5. 注入 MT7531 原生 DSA 交换机端口映射 (彻底解决网口不通/失联问题)
+# 5. 注入 MT7531 原生 DSA 交换机端口映射
 cat << 'EOF' > package/base-files/files/etc/board.d/02_network
 #!/bin/sh
 . /lib/functions/uci-defaults.sh
@@ -87,7 +87,7 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/board.d/02_network
 
-# 6. 配置 U-Boot 环境变量映射 (安全动态探测)
+# 6. 配置 U-Boot 环境变量映射
 cat << 'EOF' > package/base-files/files/etc/uci-defaults/01-fw-env-detect
 #!/bin/sh
 ENV_DEV=""
@@ -112,7 +112,6 @@ chmod +x package/base-files/files/etc/uci-defaults/01-fw-env-detect
 # 7. 5G 模组与硬件外设电源主动使能双重保险 (拉低 GPIO 31 使能供电)
 cat << 'EOF' > package/base-files/files/etc/uci-defaults/02-hardware-power
 #!/bin/sh
-# 模组核心使能 GPIO 31
 if [ ! -d /sys/class/gpio/gpio31 ]; then
     echo 31 > /sys/class/gpio/export 2>/dev/null || true
 fi
@@ -121,7 +120,6 @@ if [ -d /sys/class/gpio/gpio31 ]; then
     echo 0 > /sys/class/gpio/gpio31/value 2>/dev/null || true
 fi
 
-# 风扇硬件供电使能 GPIO 27
 if [ ! -d /sys/class/gpio/gpio27 ]; then
     echo 27 > /sys/class/gpio/export 2>/dev/null || true
 fi
@@ -186,7 +184,7 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/95-ipv6-relay
 
-# 12. Wi-Fi 默认设置 (避免强制 160MHz 导致低信道 CAC 延时)
+# 12. Wi-Fi 默认设置
 cat << 'EOF' > package/base-files/files/etc/uci-defaults/97-default-wifi
 #!/bin/sh
 wifi config 2>/dev/null || true
@@ -294,7 +292,7 @@ esac
 EOF
 chmod +x package/base-files/files/etc/hotplug.d/net/99-modem-auto
 
-# 15. 5G 基站 NITZ 授时 (自适应嗅探活动 AT 串口 + 严密原子锁)
+# 15. 5G 基站 NITZ 授时
 cat << 'EOF' > package/base-files/files/usr/bin/modem_nitz_sync
 #!/bin/sh
 command -v sms_tool >/dev/null 2>&1 || exit 0
@@ -344,7 +342,7 @@ trap - EXIT INT TERM
 EOF
 chmod +x package/base-files/files/usr/bin/modem_nitz_sync
 
-# 16. 5G 看门狗自愈脚本 (精准网卡探测 + 动态 AT 串口复位)
+# 16. 5G 看门狗自愈脚本
 cat << 'EOF' > package/base-files/files/usr/bin/modem_watchdog
 #!/bin/sh
 DNS_TARGETS="223.5.5.5 119.29.29.29 8.8.8.8"
@@ -417,7 +415,7 @@ cat << 'EOF' > package/base-files/files/etc/crontabs/root
 */2 * * * * /usr/bin/modem_watchdog >/dev/null 2>&1
 EOF
 
-# 17. 实体按键长按盲切救砖 (双变量兼容)
+# 17. 实体按键长按盲切救砖
 cat << 'EOF' > package/base-files/files/etc/rc.button/reset
 #!/bin/sh
 [ "${ACTION}" = "released" ] || exit 0
@@ -436,7 +434,7 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/rc.button/reset
 
-# 18. 平台升级脚本 (锁死 Slot B)
+# 18. 平台升级脚本
 PLATFORM_SCRIPT='#!/bin/sh
 RAMFS_COPY_BIN="${RAMFS_COPY_BIN} /usr/sbin/fw_printenv /usr/sbin/fw_setenv /bin/tar"
 
@@ -486,7 +484,7 @@ mkdir -p "$TARGET_UPGRADE_DIR"
 echo "$PLATFORM_SCRIPT" > "$TARGET_UPGRADE_DIR/platform.sh"
 chmod +x "$TARGET_UPGRADE_DIR/platform.sh"
 
-# 19. 底层 OTA 脚本 (云端 SHA256 完整性双校验)
+# 19. 底层 OTA 脚本
 cat << 'EOF' > package/base-files/files/usr/bin/c8_autoupdate
 #!/bin/sh
 REPO="AA9skillz-BN/nradio-c8-688-25.x"
@@ -553,7 +551,7 @@ sysupgrade "$TMP_IMG"
 EOF
 chmod +x package/base-files/files/usr/bin/c8_autoupdate
 
-# 20. LuCI OTA 控制器 (CSRF 加固 + 精准排除检查模式误触)
+# 20. LuCI OTA 控制器
 cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/controller/c8_autoupdate.lua
 module("luci.controller.c8_autoupdate", package.seeall)
 
@@ -821,4 +819,171 @@ function action_dualboot()
                     }
                 };
 
-   
+                xhr.onerror = function() {
+                    startCountdown();
+                };
+
+                xhr.send();
+            }
+
+            function startCountdown() {
+                var overlay = document.getElementById('boot-overlay');
+                overlay.style.display = 'flex';
+
+                var seconds = 75;
+                var timerEl = document.getElementById('countdown');
+                var timer = setInterval(function() {
+                    seconds--;
+                    if (seconds <= 0) {
+                        clearInterval(timer);
+                        timerEl.innerText = '正在尝试重新接入系统...';
+                        checkAndRedirect();
+                    } else {
+                        timerEl.innerText = seconds;
+                    }
+                }, 1000);
+            }
+
+            function checkAndRedirect() {
+                var interval = setInterval(function() {
+                    var ping = new Image();
+                    ping.onload = function() {
+                        clearInterval(interval);
+                        location.href = 'http://' + window.location.hostname;
+                    };
+                    ping.src = 'http://' + window.location.hostname + '/luci-static/resources/cbi.css?t=' + Date.now();
+                }, 3000);
+            }
+        </script>
+    ]]
+    luci.template.render_string(html)
+end
+
+function action_switch()
+    luci.http.prepare_content("text/plain; charset=utf-8")
+    local cur_boot = luci.util.exec("fw_printenv boot_part 2>/dev/null | awk -F'=' '{print $2}'")
+    if not cur_boot or cur_boot:gsub("%s+", "") == "" then
+        cur_boot = luci.util.exec("fw_printenv boot_system 2>/dev/null | awk -F'=' '{print $2}'")
+    end
+    cur_boot = cur_boot and cur_boot:gsub("%s+", "") or "2"
+    local target = (cur_boot == "1") and "2" or "1"
+    
+    local r1 = os.execute("fw_setenv boot_part " .. target)
+    local r2 = os.execute("fw_setenv boot_system " .. target)
+    if (r1 == 0 or r1 == true) or (r2 == 0 or r2 == true) then
+        luci.http.write("SUCCESS")
+        luci.util.exec("(sleep 2 && sync && reboot) &")
+    else
+        luci.http.write("FAIL")
+    end
+end
+EOF
+
+# 22. 7GB 数据分区安全挂载 (按 PARTLABEL 寻找，绝不盲目格式化已有分区)
+cat << 'EOF' > package/base-files/files/etc/uci-defaults/99-auto-expand-overlay
+#!/bin/sh
+DATA_DEV=""
+for p in /dev/disk/by-partlabel/*; do
+    case "$(basename "$p")" in
+        *data*|*rootfs_data*|*userdata*)
+            DATA_DEV="$(readlink -f "$p")"
+            break
+            ;;
+    esac
+done
+
+[ -z "$DATA_DEV" ] && [ -b "/dev/mmcblk0p10" ] && DATA_DEV="/dev/mmcblk0p10"
+
+if [ -n "$DATA_DEV" ] && [ -b "$DATA_DEV" ]; then
+    if uci -q show fstab | grep -q "$DATA_DEV"; then
+        exit 0
+    fi
+
+    if ! blkid "$DATA_DEV" >/dev/null 2>&1; then
+        if command -v mkfs.f2fs >/dev/null 2>&1; then
+            mkfs.f2fs -f -l data "$DATA_DEV"
+        elif command -v mkfs.ext4 >/dev/null 2>&1; then
+            mkfs.ext4 -F -L data "$DATA_DEV"
+        fi
+    fi
+
+    mkdir -p /tmp/ext_data
+    if mount "$DATA_DEV" /tmp/ext_data 2>/dev/null; then
+        if [ -d "/overlay/upper" ]; then
+            cp -a /overlay/* /tmp/ext_data/ 2>/dev/null || true
+        fi
+        umount /tmp/ext_data
+        rm -rf /tmp/ext_data
+
+        uci -q delete fstab.overlay
+        uci set fstab.overlay=mount
+        uci set fstab.overlay.device="$DATA_DEV"
+        uci set fstab.overlay.target='/overlay'
+        uci set fstab.overlay.enabled='1'
+        uci commit fstab
+
+        ( sleep 2 && sync && reboot ) &
+    fi
+fi
+exit 0
+EOF
+chmod +x package/base-files/files/etc/uci-defaults/99-auto-expand-overlay
+
+# 23. 模组与附加插件面板拉取
+if [ ! -d "package/luci-app-mt5700m" ]; then
+    git clone --depth=1 https://github.com/FAN789/luci-app-mt5700m.git package/luci-app-mt5700m 2>/dev/null || true
+fi
+
+if [ ! -d "package/luci-app-h5000m-fancontrol" ]; then
+    git clone --depth=1 https://github.com/FAN789/luci-app-h5000m-fancontrol.git package/luci-app-h5000m-fancontrol 2>/dev/null || true
+fi
+
+if [ ! -d "package/luci-app-sms-tool-js" ]; then
+    git clone --depth=1 https://github.com/4IceG/luci-app-sms-tool-js.git package/luci-app-sms-tool-js 2>/dev/null || true
+fi
+if [ ! -d "package/sms-tool" ] && [ ! -d "package/feeds/packages/sms-tool" ]; then
+    git clone --depth=1 https://github.com/4IceG/openwrt-sms-tool.git package/sms-tool 2>/dev/null || true
+fi
+if [ ! -d "package/luci-app-3ginfo-lite" ]; then
+    git clone --depth=1 https://github.com/4IceG/luci-app-3ginfo-lite.git package/luci-app-3ginfo-lite 2>/dev/null || true
+fi
+
+# 24. 模组与短信插件默认通信串口智能配置 (自适应探测可用串口)
+cat << 'EOF' > package/base-files/files/etc/uci-defaults/99-cellular-addons-default
+#!/bin/sh
+DEF_PORT="/dev/ttyUSB1"
+for p in /dev/ttyUSB1 /dev/ttyUSB2 /dev/ttyUSB0; do
+    [ -c "$p" ] && DEF_PORT="$p" && break
+done
+
+if [ -f /etc/config/mt5700m ]; then
+    uci -q batch << EOU
+set mt5700m.@mt5700m[0].port='$DEF_PORT'
+commit mt5700m
+EOU
+fi
+
+for cfg in sms_tool sms_tool_js; do
+    if [ -f "/etc/config/$cfg" ]; then
+        uci -q batch << EOU
+set $cfg.main=$cfg
+set $cfg.main.read_port='$DEF_PORT'
+set $cfg.main.send_port='$DEF_PORT'
+set $cfg.main.readport='$DEF_PORT'
+set $cfg.main.sendport='$DEF_PORT'
+commit $cfg
+EOU
+    fi
+done
+
+if [ -f /etc/config/3ginfo ]; then
+    uci -q batch << EOU
+set 3ginfo.@3ginfo[0].device='$DEF_PORT'
+commit 3ginfo
+EOU
+fi
+exit 0
+EOF
+chmod +x package/base-files/files/etc/uci-defaults/99-cellular-addons-default
+
+exit 0
