@@ -1719,10 +1719,14 @@ document.addEventListener("DOMContentLoaded", function() {
     }
 });
 
+var isPolling = false;
 function updateCockpit() {
+    if (isPolling) return;
+    isPolling = true;
     var url = '<%=luci.dispatcher.build_url("admin", "c8_home", "status")%>';
     var xhr = new XMLHttpRequest();
     xhr.open("GET", url + "?_t=" + Date.now(), true);
+    xhr.timeout = 3000;
     xhr.onload = function() {
         if (xhr.status === 200) {
             try {
@@ -1752,14 +1756,20 @@ function updateCockpit() {
                 }
             } catch(e) {}
         }
+        isPolling = false;
+        setTimeout(updateCockpit, 3500);
+    };
+    xhr.ontimeout = xhr.onerror = function() {
+        isPolling = false;
+        setTimeout(updateCockpit, 5000);
     };
     xhr.send();
 }
 
-setInterval(updateCockpit, 3500);
 updateCockpit();
 </script>
 <%+footer%>
+
 EOF
 
 exit 0
