@@ -986,7 +986,7 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/99-cellular-addons-default
 # =============================================================================
-# NRadio C8-688 专属融合现代中控台 (Warm Hardware Cockpit)
+# NRadio C8-688 专属 MYOS 沉浸式中控台 (包含一级/二级菜单闭环与全套硬件感知)
 # =============================================================================
 mkdir -p package/base-files/files/usr/lib/lua/luci/controller
 mkdir -p package/base-files/files/usr/lib/lua/luci/view/c8
@@ -1008,23 +1008,19 @@ function action_status()
     luci.http.prepare_content("application/json")
     local util = luci.util
 
-    -- 1. CPU 温度与 PWM 风扇
     local cpu_temp = util.exec("cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null | awk '{printf \"%.1f\", $1/1000}'"):gsub("%s+", "")
     if cpu_temp == "" then cpu_temp = "49.5" end
 
-    -- 2. 内存使用情况
     local mem_raw = util.exec("free -m | grep Mem | awk '{print $3,$2}'")
     local mem_used, mem_total = mem_raw:match("(%d+)%s+(%d+)")
     mem_used = tonumber(mem_used) or 150
     mem_total = tonumber(mem_total) or 986
     local mem_pct = math.floor((mem_used / mem_total) * 100)
 
-    -- 3. eMMC 数据分区 (mmcblk0p10 7GB 空间)
     local emmc_raw = util.exec("df -m /overlay 2>/dev/null | tail -n 1 | awk '{print $3,$2,$4}'")
     local emmc_used, emmc_total, emmc_avail = emmc_raw:match("(%d+)%s+(%d+)%s+(%d+)")
     emmc_avail = tonumber(emmc_avail) or 6900
 
-    -- 4. MT7531 DSA 物理端口状态探测
     local ports = {}
     for _, ifname in ipairs({"lan1", "lan2", "lan3", "wan"}) do
         local carrier = util.exec("cat /sys/class/net/" .. ifname .. "/carrier 2>/dev/null"):gsub("%s+", "")
@@ -1035,7 +1031,6 @@ function action_status()
         }
     end
 
-    -- 5. MT5700M 5G 模组探测 (通过 AT 串口或驱动状态)
     local at_port = "/dev/ttyUSB1"
     if not nixio.fs.access(at_port) then at_port = "/dev/ttyUSB2" end
     
@@ -1072,28 +1067,151 @@ function action_status()
 end
 EOF
 
-# 2. 前端高质感现代模板
+# 2. 前端模板：一二级菜单深度定制 + 现代中控台
 cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/view/c8/home_view.htm
 <%+header%>
 <style>
+/* ---------------- 现代化字体栈与全局色彩 ---------------- */
 :root {
     --c8-base: #f7f6f0;
     --c8-card: #ffffff;
     --c8-card-sub: #faf9f5;
+    --c8-sub-slot: #ece9df;
     --c8-main: #1f2937;
     --c8-muted: #6b7280;
     --c8-gold: #c27803;
+    --c8-gold-bg: #faeed9;
     --c8-emerald: #059669;
     --c8-radius: 18px;
     --c8-shadow: 0 4px 24px -2px rgba(0, 0, 0, 0.05);
 }
 
-body {
+body, input, button, select {
     background-color: var(--c8-base) !important;
     color: var(--c8-main) !important;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif !important;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif !important;
+    -webkit-font-smoothing: antialiased !important;
+    -moz-osx-font-smoothing: grayscale !important;
+    text-rendering: optimizeLegibility !important;
+    letter-spacing: -0.01em;
 }
 
+/* ---------------- 侧边栏与导航顶栏深度重构 ---------------- */
+header, .main > header {
+    background: #ffffff !important;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.05) !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02) !important;
+}
+
+.main > aside, nav.side-nav, #mainmenu {
+    background: var(--c8-base) !important;
+    border-right: 1px solid rgba(0, 0, 0, 0.06) !important;
+    box-shadow: none !important;
+}
+
+.brand, .main > aside .brand {
+    color: var(--c8-main) !important;
+    font-weight: 800 !important;
+    font-size: 20px !important;
+    letter-spacing: -0.5px !important;
+    padding: 26px 20px 12px !important;
+    display: flex !important;
+    align-items: center !important;
+    gap: 8px !important;
+}
+
+.brand::after {
+    content: "NRadio-C8-New688";
+    display: block;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--c8-muted);
+    letter-spacing: 0.2px;
+    margin-top: 4px;
+}
+
+/* 一级菜单项：微圆角胶囊 */
+.main > aside .menu-item, nav.side-nav > ul > li > a, #mainmenu > li > a {
+    color: #4b5563 !important;
+    font-size: 14px !important;
+    font-weight: 600 !important;
+    border-radius: 14px !important;
+    margin: 4px 12px !important;
+    padding: 10px 16px !important;
+    display: flex !important;
+    align-items: center !important;
+    gap: 12px !important;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+    position: relative !important;
+}
+
+/* 激活选中的一级胶囊 */
+.main > aside .menu-item.active, 
+nav.side-nav > ul > li.active > a, 
+nav.side-nav li a[href*="c8_home"] {
+    background: var(--c8-gold-bg) !important;
+    color: var(--c8-gold) !important;
+    font-weight: 700 !important;
+    box-shadow: 0 2px 10px rgba(194, 120, 3, 0.12) !important;
+}
+
+nav.side-nav > ul > li > a:hover {
+    background: #eae8df !important;
+    color: var(--c8-main) !important;
+    transform: translateX(2px);
+}
+
+/* ---------------- 二级菜单专项深度美化 (彻底解决突兀问题) ---------------- */
+/* 展开的二级菜单卡槽容器 */
+.main > aside ul ul, nav.side-nav ul ul, #mainmenu ul, .slide-menu {
+    background: var(--c8-sub-slot) !important;
+    border-radius: 14px !important;
+    margin: 4px 14px 10px 18px !important;
+    padding: 6px 8px !important;
+    border-left: 2px solid rgba(194, 120, 3, 0.25) !important;
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.04) !important;
+    list-style: none !important;
+}
+
+/* 二级子菜单项按钮 */
+.main > aside ul ul li a, nav.side-nav ul ul li a, #mainmenu ul li a {
+    color: #6b7280 !important;
+    font-size: 13px !important;
+    font-weight: 500 !important;
+    border-radius: 10px !important;
+    margin: 3px 0 !important;
+    padding: 7px 14px !important;
+    display: flex !important;
+    align-items: center !important;
+    transition: all 0.18s ease !important;
+}
+
+/* 二级菜单悬停反馈 */
+.main > aside ul ul li a:hover, nav.side-nav ul ul li a:hover {
+    background: #ffffff !important;
+    color: var(--c8-main) !important;
+    font-weight: 600 !important;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04) !important;
+    transform: translateX(3px) !important;
+}
+
+/* 二级菜单当前选中激活态 */
+.main > aside ul ul li.active a, nav.side-nav ul ul li.active > a {
+    background: #ffffff !important;
+    color: var(--c8-gold) !important;
+    font-weight: 700 !important;
+    box-shadow: 0 2px 8px rgba(194, 120, 3, 0.15) !important;
+}
+
+/* 伪元素图标映射 */
+nav.side-nav li a[href*="c8_home"]::before { content: "🏠"; font-size: 15px; }
+nav.side-nav li a[href*="status"]::before  { content: "📊"; font-size: 15px; }
+nav.side-nav li a[href*="system"]::before  { content: "⚙️"; font-size: 15px; }
+nav.side-nav li a[href*="network"]::before { content: "📶"; font-size: 15px; }
+nav.side-nav li a[href*="modem"]::before   { content: "📡"; font-size: 15px; }
+nav.side-nav li a[href*="logout"]::before  { content: "🚪"; font-size: 15px; }
+
+/* ---------------- 中控驾驶舱主区域 ---------------- */
 .c8-wrap {
     max-width: 1400px;
     margin: 10px auto 40px auto;
@@ -1120,7 +1238,6 @@ body {
     transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 
-/* 中央设备主展示卡 */
 .hero-card {
     display: flex;
     flex-direction: column;
@@ -1155,9 +1272,10 @@ body {
 
 .hero-heading {
     font-size: 24px;
-    font-weight: 700;
+    font-weight: 750;
     margin-top: 6px;
     color: var(--c8-main);
+    letter-spacing: -0.5px;
 }
 
 .hero-desc {
@@ -1165,7 +1283,6 @@ body {
     color: var(--c8-muted);
 }
 
-/* 拟态机身与拓扑区 */
 .device-center {
     flex: 1;
     display: flex;
@@ -1203,7 +1320,6 @@ body {
 
 @keyframes c8-rotate { 100% { transform: rotate(360deg); } }
 
-/* 物理端口微拓扑 */
 .ports-shelf {
     display: flex;
     gap: 12px;
@@ -1218,13 +1334,14 @@ body {
     display: flex;
     align-items: center;
     gap: 6px;
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
-    padding: 4px 10px;
-    border-radius: 8px;
+    padding: 5px 12px;
+    border-radius: 10px;
     background: #ffffff;
     border: 1px solid #e5e7eb;
     color: var(--c8-muted);
+    transition: all 0.2s ease;
 }
 
 .port-pill.active {
@@ -1245,7 +1362,6 @@ body {
     box-shadow: 0 0 6px var(--c8-emerald);
 }
 
-/* 底部指标条 */
 .hero-footer {
     display: flex;
     justify-content: space-between;
@@ -1256,7 +1372,6 @@ body {
     margin-top: auto;
 }
 
-/* 右侧子卡片 */
 .sub-panel {
     background: var(--c8-card-sub);
     border-radius: 14px;
@@ -1275,9 +1390,10 @@ body {
 }
 
 .metric-number {
-    font-size: 20px;
-    font-weight: 700;
+    font-size: 22px;
+    font-weight: 750;
     color: var(--c8-main);
+    letter-spacing: -0.5px;
 }
 
 .badge-soft {
@@ -1330,7 +1446,6 @@ body {
                     </div>
                 </div>
 
-                <!-- 机身渲染与网口 -->
                 <div class="device-center">
                     <div class="device-ripple"></div>
                     <div class="device-body">
@@ -1344,7 +1459,6 @@ body {
                     </div>
                     <div style="font-size: 12px; font-weight: 600; color: #6b7280; margin-top: 14px;">HC-WT9104 · DualBoot 架构</div>
 
-                    <!-- DSA 物理网口状态看板 -->
                     <div class="ports-shelf">
                         <div class="port-pill" id="p-wan"><span class="port-dot"></span><span>WAN (2.5G)</span></div>
                         <div class="port-pill" id="p-lan1"><span class="port-dot"></span><span>LAN 1</span></div>
@@ -1365,7 +1479,6 @@ body {
                 </div>
             </div>
 
-            <!-- 底层资源与 7GB 存储 -->
             <div class="card">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
                     <div style="font-weight: 700; font-size: 15px;">系统资源与存储状态</div>
@@ -1383,7 +1496,6 @@ body {
 
         <!-- 右侧蜂窝中枢 -->
         <div>
-            <!-- 已连接设备简报 -->
             <div class="card" style="padding: 18px 22px;">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
                     <span style="font-weight: 600; font-size: 14px;">局域网连接设备</span>
@@ -1391,7 +1503,6 @@ body {
                 </div>
             </div>
 
-            <!-- 5G 蜂窝数据核心看板 -->
             <div class="card">
                 <div class="panel-header">
                     <span>📶 蜂窝移动网络</span>
@@ -1416,7 +1527,6 @@ body {
                 </div>
             </div>
 
-            <!-- 设备硬件温度与散热 -->
             <div class="card">
                 <div style="font-weight: 700; font-size: 14px; margin-bottom: 12px;">散热与环境健康</div>
                 <div class="two-col-grid">
@@ -1435,6 +1545,18 @@ body {
 </div>
 
 <script type="text/javascript">
+document.addEventListener("DOMContentLoaded", function() {
+    var aside = document.querySelector(".main > aside") || document.querySelector("nav.side-nav");
+    if (aside && !document.getElementById("myos-search-bar")) {
+        var searchBox = document.createElement("div");
+        searchBox.id = "myos-search-bar";
+        searchBox.style.cssText = "margin: 8px 14px 16px; padding: 8px 14px; background: rgba(0,0,0,0.04); border-radius: 12px; font-size: 12px; color: #9ca3af; display: flex; align-items: center; gap: 8px; border: 1px solid rgba(0,0,0,0.03);";
+        searchBox.innerHTML = "<span>🔍</span><span>搜索菜单或操作</span>";
+        var firstMenu = aside.querySelector("ul") || aside.children[1];
+        if (firstMenu) aside.insertBefore(searchBox, firstMenu);
+    }
+});
+
 function updateCockpit() {
     var url = '<%=luci.dispatcher.build_url("admin", "c8_home", "status")%>';
     var xhr = new XMLHttpRequest();
@@ -1450,7 +1572,6 @@ function updateCockpit() {
                 document.getElementById("client-text").innerText = d.clients + " 台";
                 document.getElementById("emmc-text").innerText = "eMMC 数据盘: " + d.emmc_avail_gb + " GB 可用 (F2FS 自动扩容)";
 
-                // 物理网口状态刷新
                 ["wan", "lan1", "lan2", "lan3"].forEach(function(p) {
                     var el = document.getElementById("p-" + p);
                     if (d.ports && d.ports[p] && d.ports[p].up) {
@@ -1460,7 +1581,6 @@ function updateCockpit() {
                     }
                 });
 
-                // 5G 模组信息刷新
                 if (d.modem) {
                     document.getElementById("oper-name").innerText = d.modem.operator;
                     document.getElementById("sim-badge").innerText = d.modem.sim;
@@ -1479,4 +1599,5 @@ updateCockpit();
 </script>
 <%+footer%>
 EOF
+
 exit 0
