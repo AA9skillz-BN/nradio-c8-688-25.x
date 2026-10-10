@@ -1,88 +1,57 @@
-# 🚀 NRadio C8-688 ImmortalWrt DualBoot 固件
-专为 NRadio C8-688（MT7981B + 1GB RAM + 8GB eMMC）量身打造的高性能、高稳定性 A/B 双系统定制固件。
+# ImmortalWrt 25.x for NRadio C8-688 (HC-WT9104)
+针对 **NRadio C8-688**（原厂硬件代号 `HC-WT9104`）深度适配的 ImmortalWrt 固件定制项目。  
+采用原厂完整硬件拓扑与设备树定义，深度加固 DualBoot（A/B 双槽位）物理隔离机制，并针对联发科 MT5700M 5G 模组与温控风扇进行了底层适配。
 ---
-## 🌟 核心特性亮点
-- 🧠 **1GB RAM 物理内存映射**：通过重构内核 DTS 内存节点（`0x40000000 - 0x80000000`），完整释放 1GB 内存容量，告别 512MB 限制，保障多任务并发稳定性。
-- 🛡️ **A/B 双系统物理隔离架构**：
-  - **Slot A（主槽位）**：保留原厂出厂系统，物理隔离锁死，互不干扰。
-  - **Slot B（副槽位）**：专属 ImmortalWrt 固件空间（Kernel: `/dev/mmcblk0p8`，Rootfs: `/dev/mmcblk0p9`）。
-  - **救砖机制**：实体 Reset 按键支持长按 10 秒强制切回 Slot A 原厂系统。
-- 💾 **系统与数据物理隔离设计**：
-  - 系统根目录严格约束在安全的 512MB 物理边界内，杜绝越界覆写风险。
-  - 剩余 6.5GB+ eMMC 空间（`/dev/mmcblk0p10`）保留为独立数据存储，系统重置或 OTA 升级时个人数据永不丢失。
-- 📶 **5G 工业级网络栈支持**：
-  - 原生集成 MT5700M 模组控制面板，支持 5G 信号看板、锁频、锁基站、SA/NSA 模式切换与网页端 AT 控制台交互。
-  - 模组串口访问集成原子排他锁与进程信号捕获，避免串口资源并发死锁。
-  - 内置 5G 网络断网自愈看门狗与基站 NITZ 自动授时机制。
-  - 支持蜂窝 5G IPv6 Relay（中继/穿透）与防火墙出站防限速 TTL 锁定。
-- ❄️ **硬件 PWM 智能温控**：驱动芯片原生 PWM 硬件接口，配合 H5000M 温控面板实现风扇转速随温度自适应调节。
-- ⚡ **内核传输深度加速**：开启 MTK 硬件网络加速（PPE / Flowtable）、FullCone NAT 与内核级 TCP BBR 拥塞控制。
-- 🔄 **GitHub Release 在线 OTA 升级**：集成 Web 端一键版本检测与静默升级逻辑，固件刷入过程强制锁定 Slot B 分区。
+## 🌟 硬件规格与原生架构特性
+* **SoC**：MediaTek Filogic 820 (MT7981B) 双核 Cortex-A53 @ 1.3GHz
+* **内存 (RAM)**：1024MB (1GB) DDR4
+* **存储 (eMMC)**：8GB 高速 eMMC（引脚复用严格遵循原厂 `emmc_45`）
+* **以太网交换拓扑 (DSA)**：
+  * 原厂 **MT7531** 交换芯片（MDIO 地址 31，复位引脚 GPIO 39）
+  * CPU GMAC0 / GMAC1 双 2.5G fixed-link 架构
+  * 物理端口划分：`lan1`、`lan2`、`lan3`（千兆 LAN）与 `wan`（2.5G 高速 WAN 口，外置 PHY5）
+* **无线网络**：
+  * MT7981B 内置 Wi-Fi 6，支持 2.4G & 5G 独立射频
+  * 默认启用稳定低延时信道方案（5G 频段锁定 Channel 36，80MHz，规避 CAC 雷达退避）
+* **5G 蜂窝模组适配**：
+  * 原厂硬件电源控制：启动阶段自动拉低 `GPIO 31`（`cpe-pwr`）使能模组供电
+  * 控制引脚导出：`GPIO 29`（`cpe-sel0`）与 `GPIO 30`（`cpe-sel1`）
+  * 数据网卡自适应：全自动兼容板载直连 `eth2`、USB `usb0` 及 `wwan0`
+  * 串口动态嗅探：自动探测 `/dev/ttyUSB1` 与 `/dev/ttyUSB2` 可用性，内置防并发原子锁
+* **主动散热**：
+  * 原厂 PWM 硬件调速风扇（引脚组 `pwm0_0`，周期 40000），由 `GPIO 27` 提供硬件供电
 ---
-## 🖥 默认系统参数
+## 🛡️ 安全与双系统 (DualBoot) 机制
+* **物理隔离烧录 (Slot B)**：
+  * 本固件升级与在线更新**仅写入 Slot B**（Kernel: `/dev/mmcblk0p8`，Rootfs: `/dev/mmcblk0p9`）。
+  * 原厂出厂系统（Slot A，位于 `p7` 及相关分区）保持物理绝缘只读，彻底杜绝刷机变砖。
+* **7GB eMMC 空间自动利用**：
+  * 首次开机自动检测空闲数据分区（`/dev/mmcblk0p10`），安全格式化为 F2FS 并扩容挂载为 `/overlay`。
+* **硬件级长按盲切救砖**：
+  * 机身 **Reset 按键（GPIO 1）长按 10 秒以上松开**，底层将无条件向 U-Boot 写入回退变量（`boot_part=1` & `boot_system=1`）并强制重启回到原厂系统。
+* **Web 端管理**：
+  * 集成【系统】->【双系统切换】面板（带 CSRF 校验与 75 秒重启重连遮罩）。
+  * 集成【系统】->【在线更新】控制台（直连 GitHub Release，支持云端 SHA256 完整性双校验）。
+---
+## 🚀 默认系统配置
 
-| 参数项 | 默认配置信息 |
+| 项目 | 默认参数 |
 | :--- | :--- |
-| **后台 IP 地址** | `192.168.66.1` |
+| **管理后台地址** | `http://192.168.66.1` |
 | **默认账户** | `root` |
-| **默认密码** | 无密码（首次登录直接回车进入，随后提示设置） |
-| **默认无线名称** | `NRadio-C8-688-2.4G` / `NRadio-C8-688-5G` |
-| **默认无线密码** | `12345678` |
-| **5G 频段参数** | 36 信道，HE160 模式（160MHz 满血频宽） |
-| **固件引导槽位** | 副系统 Slot B |
+| **默认密码** | 无密码（首次登录直接回车） |
+| **2.4G Wi-Fi** | SSID: `NRadio-C8-688-2.4G` / 密码: `12345678` |
+| **5G Wi-Fi** | SSID: `NRadio-C8-688-5G` / 密码: `12345678` |
+| **防火墙与加速** | MTK PPE 硬件加速 + FullCone NAT + TCP BBR 拥塞控制 |
+| **出站蜂窝规则** | 蜂窝网口出站 TTL 锁定为 64，MSS 自动钳制 |
 
 ---
-## 🧭 后台功能导航
-- 📊 **状态 (Status)**：实时查看 1GB 内存占用、CPU 温度、系统负载与网络吞吐。
-- 📶 **蜂窝网络 (Cellular)**：
-  - **MT5700M 5G 管理**：模组运行状态、射频模式（SA/NSA）切换、锁频锁基站、网页 AT 控制台。
-  - **基站信号看板 (3Ginfo)**：查看 RSRP、RSRQ、SINR 及基站物理小区 ID（PCI）。
-  - **短信管理**：在线查看与收发 SIM 卡短信。
-- ⚙️ **服务 (Services)**：
-  - **CPE 温控风扇**：配置硬件 PWM 温控策略与阶梯转速。
-- 🌐 **网络 (Network)**：
-  - **接口 / 无线**：配置双频 Wi-Fi 6 与以太网接口。
-  - **Turbo ACC 网络加速**：硬件 PPE 流控转发与 BBR 拥塞控制状态。
-- 💻 **系统 (System)**：
-  - 🔄 **双系统切换 (DualBoot)**：一键在 Slot A 原厂与 Slot B 之间平滑切换引导槽位。
-  - 🚀 **在线更新 (AutoUpdate)**：一键检测 GitHub Release 最新固件版本并安全写入 Slot B。
-  - 📁 **挂载点 (Mount Points)**：手动将剩余的 6.5GB 独立 eMMC 分区挂载至指定目录（如 `/mnt/data`）。
-  - 🎨 **Argon 配置**：定制管理后台主题风格与登录壁纸。
----
-## 🛠️ 数据分区手动挂载指南
-为了保证系统的纯净与绝对稳定性，系统根目录限制在 512MB 物理边界内，未分配的 6.5GB+ eMMC 空间可手动挂载使用：
-### 方式一：Web 界面操作
-1. 打开路由管理后台，进入 **【系统】 ➔ 【挂载点】**。
-2. 在下方“挂载点”列表中点击 **【添加】**。
-3. **设备** 选择剩余数据分区（通常显示为 `/dev/mmcblk0p10`）。
-4. **挂载点** 输入自定义路径（例如 `/mnt/data`）。
-5. 勾选 **启用此挂载点**，点击“保存并应用”即可生效。
-### 方式二：终端命令行操作
-通过 TTYD 终端或 SSH 连接后执行以下命令：
-```bash
-# 1. 格式化数据分区为 f2fs（仅首次配置需要执行）
-mkfs.f2fs -f /dev/mmcblk0p10
-# 2. 配置开机自启并生效挂载
-mkdir -p /mnt/data
-uci add fstab mount
-uci set fstab.@mount[-1].device='/dev/mmcblk0p10'
-uci set fstab.@mount[-1].target='/mnt/data'
-uci set fstab.@mount[-1].enabled='1'
-uci commit fstab
-/etc/init.d/fstab reload
-```
----
-## 🤝 致谢与鸣谢 (Acknowledgments)
-本项目在方案设计、代码实现与功能调试过程中，深度参考并整合了以下开源项目与社区贡献者的杰出成果。在此向所有开源作者致以崇高的敬意：
-
-| 开源项目 / 依赖组件 | 原作者 / 仓库链接 | 主要用途与技术贡献 |
-| :--- | :--- | :--- |
-| **ImmortalWrt** | [immortalwrt/immortalwrt](https://github.com/immortalwrt/immortalwrt) | 提供现代化的 OpenWrt 底层源码树与 MediaTek 目标构建工具链 |
-| **luci-app-mt5700m** | [FAN789/luci-app-mt5700m](https://github.com/FAN789/luci-app-mt5700m) | 提供 MT5700M 模组的核心控制、频段锁定与网页 AT 交互面板 |
-| **luci-app-h5000m-fancontrol** | [FAN789/luci-app-h5000m-fancontrol](https://github.com/FAN789/luci-app-h5000m-fancontrol) | 提供硬件 PWM 智能温控风扇策略面板与底层驱动适配 |
-| **luci-app-autoupdate** | [Hyy2001X/luci-app-autoupdate](https://github.com/Hyy2001X/luci-app-autoupdate) | 提供 GitHub Release 固件检测、哈希校验与 OTA 架构思路 |
-| **luci-app-sms-tool-js** | [4IceG/luci-app-sms-tool-js](https://github.com/4IceG/luci-app-sms-tool-js) | 提供基于 JavaScript 的轻量化 Web 端短信收发与管理界面 |
-| **luci-app-3ginfo-lite** | [4IceG/luci-app-3ginfo-lite](https://github.com/4IceG/luci-app-3ginfo-lite) | 提供蜂窝网络基站小区（PCI）、RSRP、SINR 实时信号看板 |
-| **luci-theme-argon** | [jerrykuku/luci-theme-argon](https://github.com/jerrykuku/luci-theme-argon) | 提供现代化 Material Design 视觉主题与深色模式支持 |
-
-> 特别感谢 **OpenWrt** / **Linux MediaTek Filogic** 开源社区的长期技术积累与驱动支持。
+## 🛠️ 仓库核心文件结构
+```text
+├── .github/workflows/
+│   └── build-immortalwrt.yml      # GitHub Actions 全自动多线程编译与 Release 发布流水线
+├── c8-688.config                  # 内核驱动、MT7531 DSA 驱动、5G 工具链及 LuCI 插件配置
+├── diy-part1.sh                   # Feeds 预加载与缓存清理脚本
+├── diy-part2.sh                   # 设备树注入、板级 DSA 网口映射、模组保护与 Web 控制器注入
+├── mt7981b-nradio-c8-688.dts      # 严格对标原厂的硬件设备树源码 (MT7531/eMMC/GPIO31/PWM)
+└── README.md                      # 项目说明文档
