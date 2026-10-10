@@ -987,14 +987,14 @@ EOF
 chmod +x package/base-files/files/etc/uci-defaults/99-cellular-addons-default
 
 # =============================================================================
-# NRadio C8-688 MYOS 全局主题与中控台 (防崩/防变量展开终极安全版)
+# NRadio C8-688 MYOS 沉浸式中控台 (完美支持 PC / 平板 / 手机端响应式自适应)
 # =============================================================================
 mkdir -p package/base-files/files/www/luci-static/resources
 mkdir -p package/base-files/files/etc/uci-defaults
 mkdir -p package/base-files/files/usr/lib/lua/luci/controller
 mkdir -p package/base-files/files/usr/lib/lua/luci/view/c8
 
-# 1. 全局无死角 CSS (接管全固件一二三级菜单、表单、表格)
+# 1. 全局无死角 CSS (接管全固件一二三级菜单、表单、表格及移动端适配)
 cat << 'EOF' > package/base-files/files/www/luci-static/resources/c8-global-myos.css
 :root {
     --c8-base: #f7f6f0;
@@ -1016,6 +1016,7 @@ body, html {
     color: var(--c8-main) !important;
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif !important;
     -webkit-font-smoothing: antialiased !important;
+    overflow-x: hidden !important;
 }
 
 header, .main > header {
@@ -1101,7 +1102,6 @@ nav.side-nav > ul > li > a:hover {
     background: #ffffff !important;
     color: var(--c8-main) !important;
     font-weight: 600 !important;
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04) !important;
 }
 
 .main > aside ul ul li.active a, nav.side-nav ul ul li.active > a {
@@ -1117,6 +1117,8 @@ nav.side-nav > ul > li > a:hover {
     margin-bottom: 20px !important;
     display: flex !important;
     gap: 8px !important;
+    overflow-x: auto !important;
+    white-space: nowrap !important;
 }
 
 .cbi-tabmenu > li > a, ul.tabs > li > a {
@@ -1148,25 +1150,12 @@ table, .cbi-section-table {
     border-collapse: separate !important;
     border-spacing: 0 6px !important;
     background: transparent !important;
-}
-
-thead th, .cbi-section-table-titles th {
-    background: transparent !important;
-    color: var(--c8-muted) !important;
-    font-size: 13px !important;
-    font-weight: 600 !important;
-    border-bottom: 1px solid var(--c8-border) !important;
-    padding: 10px 14px !important;
+    width: 100% !important;
 }
 
 tbody tr, .cbi-section-table-row {
     background: var(--c8-card-sub) !important;
     border-radius: 10px !important;
-    transition: all 0.2s ease !important;
-}
-
-tbody tr:hover, .cbi-section-table-row:hover {
-    background: #f1eee4 !important;
 }
 
 tbody td, .cbi-section-table-row td {
@@ -1181,12 +1170,7 @@ input[type="text"], input[type="password"], select {
     padding: 8px 12px !important;
     color: var(--c8-main) !important;
     outline: none !important;
-    transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
-}
-
-input[type="text"]:focus, input[type="password"]:focus, select:focus {
-    border-color: var(--c8-gold) !important;
-    box-shadow: 0 0 0 3px rgba(194, 120, 3, 0.15) !important;
+    max-width: 100% !important;
 }
 
 .cbi-button-apply, .cbi-button-save, .btn-primary {
@@ -1196,14 +1180,7 @@ input[type="text"]:focus, input[type="password"]:focus, select:focus {
     border: none !important;
     border-radius: 10px !important;
     padding: 8px 22px !important;
-    box-shadow: 0 4px 12px rgba(217, 119, 6, 0.25) !important;
     cursor: pointer !important;
-    transition: transform 0.15s ease !important;
-}
-
-.cbi-button-apply:hover, .btn-primary:hover {
-    transform: translateY(-1px) !important;
-    box-shadow: 0 6px 16px rgba(217, 119, 6, 0.35) !important;
 }
 
 nav.side-nav li a[href*="c8_home"]::before { content: "🏠"; font-size: 15px; }
@@ -1212,6 +1189,20 @@ nav.side-nav li a[href*="system"]::before  { content: "⚙️"; font-size: 15px;
 nav.side-nav li a[href*="network"]::before { content: "📶"; font-size: 15px; }
 nav.side-nav li a[href*="modem"]::before   { content: "📡"; font-size: 15px; }
 nav.side-nav li a[href*="logout"]::before  { content: "🚪"; font-size: 15px; }
+
+/* 手机端全局框架自适应支持 */
+@media (max-width: 768px) {
+    .main > aside {
+        width: 260px !important;
+    }
+    .cbi-map, .cbi-section, .panel, .cbi-section-node {
+        padding: 16px !important;
+    }
+    .cbi-section-table {
+        display: block !important;
+        overflow-x: auto !important;
+    }
+}
 EOF
 
 # 2. 全局样式注入钩子
@@ -1226,7 +1217,7 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/99-inject-c8-global-myos
 
-# 3. 后端数据采集控制器 (加入 pcall 异常防护机制，杜绝 500 报错)
+# 3. 后端数据采集控制器
 cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/controller/c8_home.lua
 module("luci.controller.c8_home", package.seeall)
 
@@ -1244,17 +1235,13 @@ function action_status()
     local util = require("luci.util")
     local jsonc = require("luci.jsonc")
 
-    -- 安全读取 CPU 温度
     local cpu_temp = "49.5"
     pcall(function()
         local raw = util.exec("cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null") or ""
         local t = tonumber(raw:match("%d+"))
-        if t and t > 0 then
-            cpu_temp = string.format("%.1f", t / 1000)
-        end
+        if t and t > 0 then cpu_temp = string.format("%.1f", t / 1000) end
     end)
 
-    -- 安全读取内存
     local mem_used, mem_total, mem_pct = 150, 986, 15
     pcall(function()
         local mem_raw = util.exec("free -m | grep Mem") or ""
@@ -1266,17 +1253,13 @@ function action_status()
         end
     end)
 
-    -- 安全读取 eMMC 7GB 空间
     local emmc_avail_gb = "6.9"
     pcall(function()
         local emmc_raw = util.exec("df -m /overlay 2>/dev/null | tail -n 1") or ""
         local _, _, a = emmc_raw:match("(%d+)%s+(%d+)%s+(%d+)")
-        if a then
-            emmc_avail_gb = string.format("%.1f", tonumber(a) / 1024)
-        end
+        if a then emmc_avail_gb = string.format("%.1f", tonumber(a) / 1024) end
     end)
 
-    -- MT7531 物理端口探测
     local ports = {}
     for _, ifname in ipairs({"lan1", "lan2", "lan3", "wan"}) do
         local carrier = util.exec("cat /sys/class/net/" .. ifname .. "/carrier 2>/dev/null"):gsub("%s+", "")
@@ -1287,13 +1270,10 @@ function action_status()
         }
     end
 
-    -- MT5700M 串口探测 (安全使用 fs 模块)
     local has_modem = false
     pcall(function()
         local fs = require("nixio.fs")
-        if fs.access("/dev/ttyUSB1") or fs.access("/dev/ttyUSB2") then
-            has_modem = true
-        end
+        if fs.access("/dev/ttyUSB1") or fs.access("/dev/ttyUSB2") then has_modem = true end
     end)
 
     local uptime_sec = 0
@@ -1329,43 +1309,293 @@ function action_status()
 end
 EOF
 
-# 4. 前端首页中控驾驶舱
+# 4. 前端首页中控驾驶舱 (移动端流式断点自适应)
 cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/view/c8/home_view.htm
 <%+header%>
 <style>
-.c8-wrap { max-width: 1400px; margin: 10px auto 40px auto; padding: 0 16px; }
-.c8-grid { display: grid; grid-template-columns: 1fr 360px; gap: 20px; }
-@media (max-width: 1080px) { .c8-grid { grid-template-columns: 1fr; } }
-.card { background: var(--c8-card); border-radius: var(--c8-radius); padding: 24px; box-shadow: var(--c8-shadow); border: 1px solid var(--c8-border); margin-bottom: 20px; }
-.hero-card { display: flex; flex-direction: column; min-height: 520px; background: radial-gradient(circle at center, #ffffff 0%, #fbfaf6 75%); }
-.hero-top { display: flex; justify-content: space-between; align-items: flex-start; }
-.hero-tag { font-size: 13px; color: var(--c8-gold); font-weight: 700; display: flex; align-items: center; gap: 6px; }
-.hero-tag::before { content: ""; display: inline-block; width: 14px; height: 3px; background: var(--c8-gold); border-radius: 2px; }
-.hero-heading { font-size: 24px; font-weight: 750; margin-top: 6px; color: var(--c8-main); }
-.hero-desc { font-size: 13px; color: var(--c8-muted); }
-.device-center { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px 0; position: relative; }
-.device-body { width: 110px; height: 190px; background: linear-gradient(135deg, #ffffff 0%, #eceae4 100%); border-radius: 38px 38px 16px 16px; box-shadow: 0 24px 45px -10px rgba(0,0,0,0.12), inset 0 2px 4px #ffffff; display: flex; flex-direction: column; align-items: center; justify-content: space-between; padding: 24px 0 16px 0; border: 1px solid rgba(0,0,0,0.04); z-index: 2; }
-.device-ripple { position: absolute; width: 290px; height: 290px; border-radius: 50%; border: 1px dashed rgba(194, 120, 3, 0.2); animation: c8-rot 60s linear infinite; pointer-events: none; }
+.c8-wrap { 
+    max-width: 1400px; 
+    margin: 10px auto 40px auto; 
+    padding: 0 16px; 
+    box-sizing: border-box;
+}
+
+.c8-grid { 
+    display: grid; 
+    grid-template-columns: 1fr 360px; 
+    gap: 20px; 
+}
+
+.card { 
+    background: var(--c8-card); 
+    border-radius: var(--c8-radius); 
+    padding: 24px; 
+    box-shadow: var(--c8-shadow); 
+    border: 1px solid var(--c8-border); 
+    margin-bottom: 20px; 
+}
+
+.hero-card { 
+    display: flex; 
+    flex-direction: column; 
+    min-height: 520px; 
+    background: radial-gradient(circle at center, #ffffff 0%, #fbfaf6 75%); 
+}
+
+.hero-top { 
+    display: flex; 
+    justify-content: space-between; 
+    align-items: flex-start; 
+}
+
+.hero-tag { 
+    font-size: 13px; 
+    color: var(--c8-gold); 
+    font-weight: 700; 
+    display: flex; 
+    align-items: center; 
+    gap: 6px; 
+}
+.hero-tag::before { 
+    content: ""; 
+    display: inline-block; 
+    width: 14px; 
+    height: 3px; 
+    background: var(--c8-gold); 
+    border-radius: 2px; 
+}
+
+.hero-heading { 
+    font-size: 24px; 
+    font-weight: 750; 
+    margin-top: 6px; 
+    color: var(--c8-main); 
+}
+
+.hero-desc { 
+    font-size: 13px; 
+    color: var(--c8-muted); 
+}
+
+.device-center { 
+    flex: 1; 
+    display: flex; 
+    flex-direction: column; 
+    align-items: center; 
+    justify-content: center; 
+    padding: 24px 0; 
+    position: relative; 
+}
+
+.device-body { 
+    width: 110px; 
+    height: 190px; 
+    background: linear-gradient(135deg, #ffffff 0%, #eceae4 100%); 
+    border-radius: 38px 38px 16px 16px; 
+    box-shadow: 0 24px 45px -10px rgba(0,0,0,0.12), inset 0 2px 4px #ffffff; 
+    display: flex; 
+    flex-direction: column; 
+    align-items: center; 
+    justify-content: space-between; 
+    padding: 24px 0 16px 0; 
+    border: 1px solid rgba(0,0,0,0.04); 
+    z-index: 2; 
+    transition: all 0.3s ease;
+}
+
+.device-ripple { 
+    position: absolute; 
+    width: 290px; 
+    height: 290px; 
+    border-radius: 50%; 
+    border: 1px dashed rgba(194, 120, 3, 0.2); 
+    animation: c8-rot 60s linear infinite; 
+    pointer-events: none; 
+}
+
 @keyframes c8-rot { 100% { transform: rotate(360deg); } }
-.ports-shelf { display: flex; gap: 12px; margin-top: 24px; background: var(--c8-card-sub); padding: 10px 18px; border-radius: 14px; }
-.port-pill { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; padding: 5px 12px; border-radius: 10px; background: #ffffff; border: 1px solid #e5e7eb; color: var(--c8-muted); }
-.port-pill.active { border-color: var(--c8-emerald); color: var(--c8-emerald); background: #ecfdf5; }
-.port-dot { width: 6px; height: 6px; border-radius: 50%; background: #9ca3af; }
-.port-pill.active .port-dot { background: var(--c8-emerald); box-shadow: 0 0 6px var(--c8-emerald); }
-.hero-footer { display: flex; justify-content: space-between; align-items: center; background: var(--c8-card-sub); border-radius: 14px; padding: 14px 22px; margin-top: auto; }
-.sub-panel { background: var(--c8-card-sub); border-radius: 14px; padding: 16px; margin-bottom: 12px; }
-.panel-header { display: flex; justify-content: space-between; align-items: center; font-size: 13px; font-weight: 600; color: var(--c8-muted); margin-bottom: 8px; }
-.metric-number { font-size: 22px; font-weight: 750; color: var(--c8-main); }
-.badge-soft { display: inline-block; font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 12px; }
+
+.ports-shelf { 
+    display: flex; 
+    gap: 12px; 
+    margin-top: 24px; 
+    background: var(--c8-card-sub); 
+    padding: 10px 18px; 
+    border-radius: 14px; 
+    flex-wrap: wrap;
+    justify-content: center;
+}
+
+.port-pill { 
+    display: flex; 
+    align-items: center; 
+    gap: 6px; 
+    font-size: 12px; 
+    font-weight: 600; 
+    padding: 5px 12px; 
+    border-radius: 10px; 
+    background: #ffffff; 
+    border: 1px solid #e5e7eb; 
+    color: var(--c8-muted); 
+}
+
+.port-pill.active { 
+    border-color: var(--c8-emerald); 
+    color: var(--c8-emerald); 
+    background: #ecfdf5; 
+}
+
+.port-dot { 
+    width: 6px; 
+    height: 6px; 
+    border-radius: 50%; 
+    background: #9ca3af; 
+}
+.port-pill.active .port-dot { 
+    background: var(--c8-emerald); 
+    box-shadow: 0 0 6px var(--c8-emerald); 
+}
+
+.hero-footer { 
+    display: flex; 
+    justify-content: space-between; 
+    align-items: center; 
+    background: var(--c8-card-sub); 
+    border-radius: 14px; 
+    padding: 14px 22px; 
+    margin-top: auto; 
+}
+
+.sub-panel { 
+    background: var(--c8-card-sub); 
+    border-radius: 14px; 
+    padding: 16px; 
+    margin-bottom: 12px; 
+}
+
+.panel-header { 
+    display: flex; 
+    justify-content: space-between; 
+    align-items: center; 
+    font-size: 13px; 
+    font-weight: 600; 
+    color: var(--c8-muted); 
+    margin-bottom: 8px; 
+}
+
+.metric-number { 
+    font-size: 22px; 
+    font-weight: 750; 
+    color: var(--c8-main); 
+}
+
+.badge-soft { 
+    display: inline-block; 
+    font-size: 11px; 
+    font-weight: 600; 
+    padding: 3px 10px; 
+    border-radius: 12px; 
+}
 .badge-soft.green { background: #dcfce7; color: #15803d; }
 .badge-soft.blue  { background: #e0f2fe; color: #0369a1; }
-.two-col-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.bar-box { height: 8px; background: #e5e7eb; border-radius: 20px; overflow: hidden; margin-top: 10px; }
-.bar-inner { height: 100%; border-radius: 20px; background: #0284c7; transition: width 0.4s ease; }
+
+.two-col-grid { 
+    display: grid; 
+    grid-template-columns: 1fr 1fr; 
+    gap: 10px; 
+}
+
+.bar-box { 
+    height: 8px; 
+    background: #e5e7eb; 
+    border-radius: 20px; 
+    overflow: hidden; 
+    margin-top: 10px; 
+}
+.bar-inner { 
+    height: 100%; 
+    border-radius: 20px; 
+    background: #0284c7; 
+    transition: width 0.4s ease; 
+}
+
+/* ================== 手机端专项自适应媒体查询 ================== */
+@media (max-width: 900px) {
+    .c8-grid {
+        grid-template-columns: 1fr; /* 平板/手机端单列垂直排列 */
+    }
+}
+
+@media (max-width: 600px) {
+    .c8-wrap {
+        padding: 0 10px;
+        margin: 5px auto 25px auto;
+    }
+    
+    .card {
+        padding: 16px;
+        border-radius: 14px;
+        margin-bottom: 14px;
+    }
+
+    .hero-card {
+        min-height: auto;
+    }
+
+    .hero-top {
+        flex-direction: column;
+        gap: 10px;
+    }
+
+    .hero-heading {
+        font-size: 20px;
+    }
+
+    /* 手机端精简机身尺寸，防止纵向占满一屏 */
+    .device-body {
+        width: 80px;
+        height: 140px;
+        border-radius: 28px 28px 12px 12px;
+        padding: 16px 0 12px 0;
+    }
+
+    .device-ripple {
+        width: 190px;
+        height: 190px;
+    }
+
+    /* 手机端端口排列优化为 2x2 弹性网格 */
+    .ports-shelf {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+        padding: 10px;
+        width: 100%;
+        box-sizing: border-box;
+    }
+
+    .port-pill {
+        justify-content: center;
+        font-size: 11px;
+        padding: 6px 8px;
+    }
+
+    .hero-footer {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 8px;
+        padding: 12px 14px;
+    }
+
+    .hero-footer > div:last-child {
+        text-align: left !important;
+    }
+}
 </style>
 
 <div class="c8-wrap">
     <div class="c8-grid">
+        <!-- 主面板 -->
         <div>
             <div class="card hero-card">
                 <div class="hero-top">
@@ -1375,7 +1605,7 @@ cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/view/c8/home_view.htm
                         <div class="hero-desc">联发科 Filogic 820 + MT5700M 5G 旗舰路由</div>
                     </div>
                     <div style="display: flex; gap: 8px;">
-                        <span class="badge-soft blue">⚡ Slot B (当前固件)</span>
+                        <span class="badge-soft blue">⚡ Slot B</span>
                         <span class="badge-soft green">5G 模组已就绪</span>
                     </div>
                 </div>
@@ -1383,15 +1613,15 @@ cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/view/c8/home_view.htm
                 <div class="device-center">
                     <div class="device-ripple"></div>
                     <div class="device-body">
-                        <div style="font-size: 11px; font-weight: 800; color: #9ca3af;">5G</div>
-                        <div style="display: flex; flex-direction: column; gap: 4px;">
-                            <span style="width: 4px; height: 4px; background: #10b981; border-radius: 50%;"></span>
-                            <span style="width: 4px; height: 4px; background: #10b981; border-radius: 50%;"></span>
-                            <span style="width: 4px; height: 4px; background: #10b981; border-radius: 50%;"></span>
+                        <div style="font-size: 10px; font-weight: 800; color: #9ca3af;">5G</div>
+                        <div style="display: flex; flex-direction: column; gap: 3px;">
+                            <span style="width: 3px; height: 3px; background: #10b981; border-radius: 50%;"></span>
+                            <span style="width: 3px; height: 3px; background: #10b981; border-radius: 50%;"></span>
+                            <span style="width: 3px; height: 3px; background: #10b981; border-radius: 50%;"></span>
                         </div>
-                        <div style="height: 6px; width: 65%; background: #e5e7eb; border-radius: 4px;"></div>
+                        <div style="height: 5px; width: 60%; background: #e5e7eb; border-radius: 3px;"></div>
                     </div>
-                    <div style="font-size: 12px; font-weight: 600; color: #6b7280; margin-top: 14px;">HC-WT9104 · DualBoot 架构</div>
+                    <div style="font-size: 11px; font-weight: 600; color: #6b7280; margin-top: 12px;">HC-WT9104 · DualBoot</div>
 
                     <div class="ports-shelf">
                         <div class="port-pill" id="p-wan"><span class="port-dot"></span><span>WAN (2.5G)</span></div>
@@ -1408,28 +1638,29 @@ cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/view/c8/home_view.htm
                     </div>
                     <div style="text-align: right;">
                         <div style="font-size: 11px; color: var(--c8-muted);">安全隔离槽位</div>
-                        <div style="font-size: 14px; font-weight: 700; color: var(--c8-gold);">原厂 Slot A 就绪可回退</div>
+                        <div style="font-size: 14px; font-weight: 700; color: var(--c8-gold);">原厂 Slot A 可回退</div>
                     </div>
                 </div>
             </div>
 
             <div class="card">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <div style="font-weight: 700; font-size: 15px;">系统资源与存储状态</div>
+                    <div style="font-weight: 700; font-size: 14px;">系统资源与存储状态</div>
                     <div style="font-size: 13px; font-weight: 700; color: #0284c7;" id="mem-text">--% 内存占用</div>
                 </div>
                 <div class="bar-box"><div class="bar-inner" id="mem-bar" style="width: 15%;"></div></div>
-                <div style="display: flex; justify-content: space-between; font-size: 12px; color: var(--c8-muted); margin-top: 10px;">
-                    <span>RAM: 1024MB DDR4 高速运行内存</span>
-                    <span id="emmc-text">eMMC 数据盘: 6.9 GB 可用 (F2FS 自动扩容)</span>
+                <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--c8-muted); margin-top: 10px; flex-wrap: wrap; gap: 4px;">
+                    <span>RAM: 1024MB DDR4</span>
+                    <span id="emmc-text">eMMC 数据盘: 6.9 GB 可用</span>
                 </div>
             </div>
         </div>
 
+        <!-- 侧栏信息 -->
         <div>
-            <div class="card" style="padding: 18px 22px;">
+            <div class="card" style="padding: 16px 20px;">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span style="font-weight: 600; font-size: 14px;">局域网连接设备</span>
+                    <span style="font-weight: 600; font-size: 13px;">局域网连接设备</span>
                     <span style="font-weight: 700; font-size: 14px; color: var(--c8-gold);" id="client-text">1 台</span>
                 </div>
             </div>
@@ -1444,17 +1675,17 @@ cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/view/c8/home_view.htm
                 <div class="two-col-grid" style="margin-top: 14px;">
                     <div class="sub-panel">
                         <div style="font-size: 11px; color: var(--c8-muted);">RSRP 信号强度</div>
-                        <div style="font-size: 16px; font-weight: 700;" id="rsrp-text">-82 dBm</div>
+                        <div style="font-size: 15px; font-weight: 700;" id="rsrp-text">-82 dBm</div>
                     </div>
                     <div class="sub-panel">
                         <div style="font-size: 11px; color: var(--c8-muted);">SINR 信号信噪比</div>
-                        <div style="font-size: 16px; font-weight: 700;" id="sinr-text">22 dB</div>
+                        <div style="font-size: 15px; font-weight: 700;" id="sinr-text">22 dB</div>
                     </div>
                 </div>
 
                 <div class="sub-panel" style="margin-top: 10px;">
                     <div style="font-size: 11px; color: var(--c8-muted);">主频段 / 载波聚合</div>
-                    <div style="font-size: 15px; font-weight: 700;" id="band-text">NR5G n78</div>
+                    <div style="font-size: 14px; font-weight: 700;" id="band-text">NR5G n78</div>
                 </div>
             </div>
 
@@ -1463,11 +1694,11 @@ cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/view/c8/home_view.htm
                 <div class="two-col-grid">
                     <div class="sub-panel">
                         <div style="font-size: 11px; color: var(--c8-muted);">CPU 处理器温度</div>
-                        <div style="font-size: 18px; font-weight: 700; color: #d97706;" id="cpu-temp-text">49.5 °C</div>
+                        <div style="font-size: 16px; font-weight: 700; color: #d97706;" id="cpu-temp-text">49.5 °C</div>
                     </div>
                     <div class="sub-panel">
                         <div style="font-size: 11px; color: var(--c8-muted);">温控散热风扇</div>
-                        <div style="font-size: 18px; font-weight: 700; color: #059669;">PWM 智能</div>
+                        <div style="font-size: 16px; font-weight: 700; color: #059669;">PWM 智能</div>
                     </div>
                 </div>
             </div>
@@ -1501,7 +1732,7 @@ function updateCockpit() {
                 document.getElementById("mem-text").innerText = d.mem_pct + "% 内存占用";
                 document.getElementById("mem-bar").style.width = d.mem_pct + "%";
                 document.getElementById("client-text").innerText = d.clients + " 台";
-                document.getElementById("emmc-text").innerText = "eMMC 数据盘: " + d.emmc_avail_gb + " GB 可用 (F2FS 自动扩容)";
+                document.getElementById("emmc-text").innerText = "eMMC 数据盘: " + d.emmc_avail_gb + " GB 可用";
 
                 ["wan", "lan1", "lan2", "lan3"].forEach(function(p) {
                     var el = document.getElementById("p-" + p);
