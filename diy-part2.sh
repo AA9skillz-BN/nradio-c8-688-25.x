@@ -1,8 +1,8 @@
 #!/bin/bash
 # -----------------------------------------------------------------------------
-# DIY script 2: NRadio C8-688 纯净稳定版构建脚本
-# 适配 ImmortalWrt 25.x / Linux 6.12 / fw4 (nftables) / DualBoot Slot B
-# 包含：7GB Overlay 自动扩容 / 动效升级 / 双系统切换 / 5G 模组防并发锁
+# DIY script 2: NRadio C8-688 深度加固稳定版构建脚本
+# 适配 ImmortalWrt 25.x / Linux 6.12 / MT7531 DSA / DualBoot Slot B
+# 包含：模组供电保护 / DSA 网口映射 / 7GB Overlay 安全扩容 / CSRF 动效升级
 # -----------------------------------------------------------------------------
 
 [ -d "openwrt" ] && cd openwrt
@@ -35,7 +35,7 @@ else
     exit 1
 fi
 
-# 2. 向 filogic.mk 追加设备定义 (彻底剔除多余的 DEVICE_DTS_DIR，杜绝路径重复嵌套报错)
+# 2. 向 filogic.mk 追加设备定义
 FILOGIC_MK="target/linux/mediatek/image/filogic.mk"
 if [ -f "$FILOGIC_MK" ] && ! grep -q "define Device/nradio_c8-688" "$FILOGIC_MK"; then
     echo "Injecting Device/nradio_c8-688 into filogic.mk..."
@@ -47,7 +47,7 @@ define Device/nradio_c8-688
   DEVICE_DTS := mt7981b-nradio-c8-688
   SOC := mt7981
   SUPPORTED_DEVICES := nradio,c8-688 nradio,c8-668
-  DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware kmod-usb-net-cdc-ether kmod-usb-net-rndis kmod-usb-net-cdc-mbim kmod-usb-serial-option
+  DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware kmod-usb-net-cdc-ether kmod-usb-net-rndis kmod-usb-net-cdc-mbim kmod-usb-serial-option kmod-dsa-mt7530
   IMAGES := sysupgrade.bin
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
 endef
@@ -58,10 +58,8 @@ fi
 # 3. 基础设置：LAN IP 默认设为 192.168.66.1
 sed -i 's/192.168.1.1/192.168.66.1/g' package/base-files/files/bin/config_generate
 
-# 4. 清理旧版废弃的 kmod-usb2 声明
-find package/ feeds/ -name "Makefile" -o -name "*.mk" | xargs sed -i 's/+kmod-usb2//g' 2>/dev/null || true
-
-# 5. 准备目录结构
+# 4. 准备必要目录结构
+mkdir -p package/base-files/files/etc/board.d
 mkdir -p package/base-files/files/etc/uci-defaults
 mkdir -p package/base-files/files/etc/hotplug.d/net
 mkdir -p package/base-files/files/etc/nftables.d
@@ -71,28 +69,77 @@ mkdir -p package/base-files/files/lib/upgrade
 mkdir -p package/base-files/files/usr/bin
 mkdir -p package/base-files/files/usr/lib/lua/luci/controller
 
-# 6. 配置 U-Boot 环境变量映射文件 (增加多重容错探测逻辑)
+# 5. 注入 MT7531 原生 DSA 交换机端口映射 (彻底解决网口不通/失联问题)
+cat << 'EOF' > package/base-files/files/etc/board.d/02_network
+#!/bin/sh
+. /lib/functions/uci-defaults.sh
+
+board_config_update
+
+case "$(board_name)" in
+nradio,c8-688|nradio,c8-668)
+    ucidef_set_interfaces_lan_wan "lan1 lan2 lan3" "wan"
+    ;;
+esac
+
+board_config_flush
+exit 0
+EOF
+chmod +x package/base-files/files/etc/board.d/02_network
+
+# 6. 配置 U-Boot 环境变量映射 (安全动态探测)
 cat << 'EOF' > package/base-files/files/etc/uci-defaults/01-fw-env-detect
 #!/bin/sh
-if [ -b "/dev/mmcblk0p2" ] && grep -qi "ubootenv" /proc/partitions 2>/dev/null; then
+ENV_DEV=""
+for p in /dev/disk/by-partlabel/*; do
+    case "$(basename "$p")" in
+        *ubootenv*|*env*|*uboot_env*)
+            ENV_DEV="$(readlink -f "$p")"
+            break
+            ;;
+    esac
+done
+
+if [ -n "$ENV_DEV" ] && [ -b "$ENV_DEV" ]; then
+    echo "$ENV_DEV 0x0 0x80000" > /etc/fw_env.config
+elif [ -b "/dev/mmcblk0p2" ]; then
     echo "/dev/mmcblk0p2 0x0 0x80000" > /etc/fw_env.config
-elif [ ! -f /etc/fw_env.config ]; then
-    cat << 'CONF' > /etc/fw_env.config
-/dev/mmcblk0 0x100000 0x80000 0x80000
-/dev/mmcblk0 0x180000 0x80000 0x80000
-CONF
 fi
 exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/01-fw-env-detect
 
-# 7. 实装 TCP BBR 拥塞控制与 FQ 队列调度
+# 7. 5G 模组与硬件外设电源主动使能双重保险 (拉低 GPIO 31 使能供电)
+cat << 'EOF' > package/base-files/files/etc/uci-defaults/02-hardware-power
+#!/bin/sh
+# 模组核心使能 GPIO 31
+if [ ! -d /sys/class/gpio/gpio31 ]; then
+    echo 31 > /sys/class/gpio/export 2>/dev/null || true
+fi
+if [ -d /sys/class/gpio/gpio31 ]; then
+    echo out > /sys/class/gpio/gpio31/direction 2>/dev/null || true
+    echo 0 > /sys/class/gpio/gpio31/value 2>/dev/null || true
+fi
+
+# 风扇硬件供电使能 GPIO 27
+if [ ! -d /sys/class/gpio/gpio27 ]; then
+    echo 27 > /sys/class/gpio/export 2>/dev/null || true
+fi
+if [ -d /sys/class/gpio/gpio27 ]; then
+    echo out > /sys/class/gpio/gpio27/direction 2>/dev/null || true
+    echo 1 > /sys/class/gpio/gpio27/value 2>/dev/null || true
+fi
+exit 0
+EOF
+chmod +x package/base-files/files/etc/uci-defaults/02-hardware-power
+
+# 8. TCP BBR 拥塞控制
 cat << 'EOF' >> package/base-files/files/etc/sysctl.conf
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
 EOF
 
-# 8. 防火墙出站 TTL 锁定 64 (兼容 fw4 内部 include 语法规则，移除多余外层 table 声明)
+# 9. 防火墙出站 TTL 锁定 (全适配 eth2/wwan/usb/modem 接口)
 cat << 'EOF' > package/base-files/files/etc/nftables.d/10-custom-ttl.nft
 chain forward_mss_clamp {
     type filter hook forward priority 0; policy accept;
@@ -100,12 +147,11 @@ chain forward_mss_clamp {
 }
 chain postrouting_mangle_ttl {
     type filter hook postrouting priority 300; policy accept;
-    ip ttl set 64
-    ip6 hoplimit set 64
+    oifname { "wwan*", "usb*", "modem_*", "eth2" } ip ttl set 64
 }
 EOF
 
-# 9. 流量统计 nlbwmon 默认参数初始化
+# 10. 流量统计 nlbwmon 默认配置
 cat << 'EOF' > package/base-files/files/etc/uci-defaults/94-nlbwmon-setup
 #!/bin/sh
 uci set nlbwmon.@nlbwmon[0].commit_interval='24h'
@@ -118,7 +164,7 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/94-nlbwmon-setup
 
-# 10. 蜂窝 5G IPv6 Relay (中继 / 穿透) 自动化配置
+# 11. 蜂窝 5G IPv6 Relay 自动化配置
 cat << 'EOF' > package/base-files/files/etc/uci-defaults/95-ipv6-relay
 #!/bin/sh
 uci set network.lan.delegate='0'
@@ -140,7 +186,7 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/95-ipv6-relay
 
-# 11. 出厂默认开启 Wi-Fi 并设置 160MHz 满血频宽 + 密码防护
+# 12. Wi-Fi 默认设置 (避免强制 160MHz 导致低信道 CAC 延时)
 cat << 'EOF' > package/base-files/files/etc/uci-defaults/97-default-wifi
 #!/bin/sh
 wifi config 2>/dev/null || true
@@ -148,15 +194,14 @@ wifi config 2>/dev/null || true
 radio_idx=0
 for dev in $(uci -q show wireless | grep "=wifi-device" | cut -d'.' -f2 | cut -d'=' -f1); do
     uci set wireless.${dev}.disabled='0'
+    uci set wireless.${dev}.country='CN'
     if [ "$radio_idx" -eq 0 ]; then
-        uci set wireless.${dev}.country='CN'
         uci -q set wireless.default_${dev}.ssid='NRadio-C8-688-2.4G'
         uci -q set wireless.default_${dev}.encryption='psk2'
         uci -q set wireless.default_${dev}.key='12345678'
     else
-        uci set wireless.${dev}.country='CN'
         uci set wireless.${dev}.channel='36'
-        uci set wireless.${dev}.htmode='HE160'
+        uci set wireless.${dev}.htmode='HE80'
         uci -q set wireless.default_${dev}.ssid='NRadio-C8-688-5G'
         uci -q set wireless.default_${dev}.encryption='psk2'
         uci -q set wireless.default_${dev}.key='12345678'
@@ -170,46 +215,48 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/97-default-wifi
 
-# 12. 5G 基站 NITZ 自动授时 (集成原子排他锁与进程捕获)
-cat << 'EOF' > package/base-files/files/usr/bin/modem_nitz_sync
+# 13. 5G 模组数据面自适应探测 (针对未触发热插拔的 eth2 网卡)
+cat << 'EOF' > package/base-files/files/etc/uci-defaults/98-detect-modem-net
 #!/bin/sh
-PORT="/dev/ttyUSB1"
-[ -c "$PORT" ] || exit 0
-command -v sms_tool >/dev/null 2>&1 || exit 0
+setup_modem_iface() {
+    local ifname="$1"
+    [ -n "$ifname" ] || return
 
-LOCKDIR="/var/lock/modem_at.lock"
-trap 'rm -rf "$LOCKDIR"' EXIT INT TERM
-
-acquired=0
-for i in $(seq 1 10); do
-    if mkdir "$LOCKDIR" 2>/dev/null; then
-        acquired=1
-        break
+    if uci -q get firewall.@zone[1] >/dev/null; then
+        uci -q del_list firewall.@zone[1].network='modem_5g'
+        uci add_list firewall.@zone[1].network='modem_5g'
+        uci -q del_list firewall.@zone[1].network='modem_5g_6'
+        uci add_list firewall.@zone[1].network='modem_5g_6'
+        uci commit firewall
+        /etc/init.d/firewall reload >/dev/null 2>&1
     fi
-    sleep 0.5
-done
 
-[ "$acquired" -eq 1 ] || exit 1
+    uci set network.modem_5g=interface
+    uci set network.modem_5g.proto='dhcp'
+    uci set network.modem_5g.device="$ifname"
+    uci set network.modem_5g.metric='10'
 
-RESP=$(sms_tool -d "$PORT" at "AT+CCLK?" 2>/dev/null | grep -i "+CCLK:" | head -n 1)
+    uci set network.modem_5g_6=interface
+    uci set network.modem_5g_6.proto='dhcpv6'
+    uci set network.modem_5g_6.device="$ifname"
+    uci set network.modem_5g_6.reqaddress='try'
+    uci set network.modem_5g_6.reqprefix='auto'
+    uci set network.modem_5g_6.metric='10'
+    uci commit network
+}
 
-if [ -n "$RESP" ]; then
-    RAW_TIME=$(echo "$RESP" | sed -n 's/.*"\([0-9\/]*,[0-9:]*\).*/\1/p')
-    if [ -n "$RAW_TIME" ]; then
-        FORMATTED_TIME=$(echo "$RAW_TIME" | awk -F'[/,:]' '{printf "%02d%02d%02d%02d20%02d.%02d", $2, $3, $4, $5, $1, $6}')
-        date "$FORMATTED_TIME" >/dev/null 2>&1 || date -s "$FORMATTED_TIME" >/dev/null 2>&1
-        logger -t "NITZ" "已成功同步 5G 基站网络时间: $FORMATTED_TIME"
-    fi
+if [ -d "/sys/class/net/eth2" ]; then
+    setup_modem_iface "eth2"
 fi
-rm -rf "$LOCKDIR"
+exit 0
 EOF
-chmod +x package/base-files/files/usr/bin/modem_nitz_sync
+chmod +x package/base-files/files/etc/uci-defaults/98-detect-modem-net
 
-# 13. 注入 5G 模组自适应热插拔与双栈网络支持
+# 14. 注入 5G 模组自适应热插拔脚本 (全面覆盖 eth2/usb*/wwan*)
 cat << 'EOF' > package/base-files/files/etc/hotplug.d/net/99-modem-auto
 #!/bin/sh
 case "$INTERFACE" in
-    usb*|wwan*)
+    usb*|wwan*|eth2)
         if [ "$ACTION" = "add" ]; then
             CURRENT_DEV=$(uci -q get network.modem_5g.device)
             if [ -n "$CURRENT_DEV" ] && [ -d "/sys/class/net/$CURRENT_DEV" ] && [ "$CURRENT_DEV" != "$INTERFACE" ]; then
@@ -247,7 +294,57 @@ esac
 EOF
 chmod +x package/base-files/files/etc/hotplug.d/net/99-modem-auto
 
-# 14. 5G 模组掉线自愈看门狗脚本 (精准网卡设备绑定与容错探针)
+# 15. 5G 基站 NITZ 授时 (自适应嗅探活动 AT 串口 + 严密原子锁)
+cat << 'EOF' > package/base-files/files/usr/bin/modem_nitz_sync
+#!/bin/sh
+command -v sms_tool >/dev/null 2>&1 || exit 0
+
+find_at_port() {
+    for p in /dev/ttyUSB1 /dev/ttyUSB2 /dev/ttyUSB0; do
+        if [ -c "$p" ]; then
+            if sms_tool -d "$p" at "AT" 2>/dev/null | grep -qi "OK"; then
+                echo "$p"
+                return 0
+            fi
+        fi
+    done
+    [ -c "/dev/ttyUSB1" ] && echo "/dev/ttyUSB1" && return 0
+    [ -c "/dev/ttyUSB2" ] && echo "/dev/ttyUSB2" && return 0
+    return 1
+}
+
+PORT=$(find_at_port)
+[ -n "$PORT" ] || exit 0
+
+LOCKDIR="/var/lock/modem_at.lock"
+acquired=0
+for i in $(seq 1 10); do
+    if mkdir "$LOCKDIR" 2>/dev/null; then
+        acquired=1
+        break
+    fi
+    sleep 0.5
+done
+
+[ "$acquired" -eq 1 ] || exit 1
+trap 'rm -rf "$LOCKDIR"' EXIT INT TERM
+
+RESP=$(sms_tool -d "$PORT" at "AT+CCLK?" 2>/dev/null | grep -i "+CCLK:" | head -n 1)
+
+if [ -n "$RESP" ]; then
+    RAW_TIME=$(echo "$RESP" | sed -n 's/.*"\([0-9\/]*,[0-9:]*\).*/\1/p')
+    if [ -n "$RAW_TIME" ]; then
+        FORMATTED_TIME=$(echo "$RAW_TIME" | awk -F'[/,:]' '{printf "%02d%02d%02d%02d20%02d.%02d", $2, $3, $4, $5, $1, $6}')
+        date "$FORMATTED_TIME" >/dev/null 2>&1 || date -s "$FORMATTED_TIME" >/dev/null 2>&1
+        logger -t "NITZ" "已成功同步 5G 基站网络时间 ($PORT): $FORMATTED_TIME"
+    fi
+fi
+rm -rf "$LOCKDIR"
+trap - EXIT INT TERM
+EOF
+chmod +x package/base-files/files/usr/bin/modem_nitz_sync
+
+# 16. 5G 看门狗自愈脚本 (精准网卡探测 + 动态 AT 串口复位)
 cat << 'EOF' > package/base-files/files/usr/bin/modem_watchdog
 #!/bin/sh
 DNS_TARGETS="223.5.5.5 119.29.29.29 8.8.8.8"
@@ -276,27 +373,38 @@ fi
 FAILS=$(cat "$FAIL_LOG")
 FAILS=$((FAILS + 1))
 echo "$FAILS" > "$FAIL_LOG"
-logger -t "ModemWatchdog" "5G 蜂窝网络不可达，当前连续失败次数: $FAILS"
+logger -t "ModemWatchdog" "5G 网络探测超时，当前连续失败次数: $FAILS"
 
 if [ "$FAILS" -eq 2 ]; then
-    logger -t "ModemWatchdog" "连续 2 次探测超时，正在重启网络接口..."
+    logger -t "ModemWatchdog" "正在尝试重启网络接口..."
     ifup modem_5g
     ifup modem_5g_6
 elif [ "$FAILS" -ge 4 ]; then
-    logger -t "ModemWatchdog" "连续 4 次探测超时，触发模组硬件 AT 软复位 (CFUN)..."
-    if [ -c /dev/ttyUSB1 ]; then
+    logger -t "ModemWatchdog" "连续超时达到阈值，触发模组硬件 AT 软复位..."
+    
+    AT_PORT=""
+    for p in /dev/ttyUSB1 /dev/ttyUSB2 /dev/ttyUSB0; do
+        [ -c "$p" ] && AT_PORT="$p" && break
+    done
+
+    if [ -n "$AT_PORT" ]; then
         LOCKDIR="/var/lock/modem_at.lock"
-        trap 'rm -rf "$LOCKDIR"' EXIT INT TERM
+        acquired=0
         for i in $(seq 1 10); do
             if mkdir "$LOCKDIR" 2>/dev/null; then
-                echo -e "AT+CFUN=0\r\n" > /dev/ttyUSB1
-                sleep 3
-                echo -e "AT+CFUN=1\r\n" > /dev/ttyUSB1
-                rm -rf "$LOCKDIR"
+                acquired=1
                 break
             fi
             sleep 0.5
         done
+        if [ "$acquired" -eq 1 ]; then
+            trap 'rm -rf "$LOCKDIR"' EXIT INT TERM
+            echo -e "AT+CFUN=0\r\n" > "$AT_PORT"
+            sleep 3
+            echo -e "AT+CFUN=1\r\n" > "$AT_PORT"
+            rm -rf "$LOCKDIR"
+            trap - EXIT INT TERM
+        fi
     fi
     /etc/init.d/network restart
     /etc/init.d/odhcpd restart >/dev/null 2>&1
@@ -309,28 +417,26 @@ cat << 'EOF' > package/base-files/files/etc/crontabs/root
 */2 * * * * /usr/bin/modem_watchdog >/dev/null 2>&1
 EOF
 
-# 15. 实体 Reset 按键盲切救砖机制
+# 17. 实体按键长按盲切救砖 (双变量兼容)
 cat << 'EOF' > package/base-files/files/etc/rc.button/reset
 #!/bin/sh
 [ "${ACTION}" = "released" ] || exit 0
 . /lib/functions.sh
 
-logger -t "ResetButton" "Reset 实体键被释放，按压持续时间: ${SEEN} 秒"
-
 if [ "$SEEN" -ge 10 ]; then
-    echo "=== [灾难救回] 触发实体按键长按，强制切回原厂主系统 (Slot A) ===" > /dev/console
-    fw_setenv boot_part 1
+    echo "=== [长按救砖] 强制写入引导寄存器切回 Slot A ===" > /dev/console
+    fw_setenv boot_part 1 2>/dev/null || true
+    fw_setenv boot_system 1 2>/dev/null || true
     sync
     reboot
 elif [ "$SEEN" -ge 4 ]; then
-    echo "=== 触发恢复出厂设置 ===" > /dev/console
     firstboot -y && reboot
 fi
 exit 0
 EOF
 chmod +x package/base-files/files/etc/rc.button/reset
 
-# 16. 平台升级脚本：适配 sysupgrade-tar 并锁死 Slot B
+# 18. 平台升级脚本 (锁死 Slot B)
 PLATFORM_SCRIPT='#!/bin/sh
 RAMFS_COPY_BIN="${RAMFS_COPY_BIN} /usr/sbin/fw_printenv /usr/sbin/fw_setenv /bin/tar"
 
@@ -353,7 +459,7 @@ platform_do_upgrade() {
     local board_dir=$(tar -tf "$tar_file" | grep -m 1 "^sysupgrade-.*/$")
     board_dir="${board_dir%/}"
 
-    echo "=== [DualBoot] 正在刷入副系统 Slot B (Kernel: mmcblk0p8, Rootfs: mmcblk0p9) ==="
+    echo "=== [DualBoot] 烧录 Slot B (Kernel: mmcblk0p8, Rootfs: mmcblk0p9) ==="
     tar -xf "$tar_file" "${board_dir}/kernel" -O > /dev/mmcblk0p8
 
     if tar -tf "$tar_file" | grep -q "${board_dir}/rootfs"; then
@@ -363,8 +469,8 @@ platform_do_upgrade() {
     fi
 
     if command -v fw_setenv >/dev/null 2>&1; then
-        echo "Locking boot_part to 2 (Slot B)..."
         fw_setenv boot_part 2 2>/dev/null || true
+        fw_setenv boot_system 2 2>/dev/null || true
     fi
 
     sync
@@ -380,12 +486,13 @@ mkdir -p "$TARGET_UPGRADE_DIR"
 echo "$PLATFORM_SCRIPT" > "$TARGET_UPGRADE_DIR/platform.sh"
 chmod +x "$TARGET_UPGRADE_DIR/platform.sh"
 
-# 17. 底层 OTA 执行脚本 (保留配置平滑升级)
+# 19. 底层 OTA 脚本 (云端 SHA256 完整性双校验)
 cat << 'EOF' > package/base-files/files/usr/bin/c8_autoupdate
 #!/bin/sh
 REPO="AA9skillz-BN/nradio-c8-688-25.x"
 API_URL="https://api.github.com/repos/${REPO}/releases/latest"
 TMP_IMG="/tmp/sysupgrade.bin"
+TMP_SHA="/tmp/sha256sums.txt"
 
 echo "=== [OTA] 正在检测 GitHub Release 最新版本 [${REPO}] ==="
 RELEASE_JSON=$(curl -sL --connect-timeout 10 "$API_URL")
@@ -398,6 +505,7 @@ TAG_NAME=$(echo "$RELEASE_JSON" | jq -r '.tag_name // empty')
 echo "线上最新版本标签: ${TAG_NAME:-未知}"
 
 DOWNLOAD_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | test(".*nradio_c8-688.*sysupgrade\\.bin$")) | .browser_download_url' | head -n 1)
+SHA_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name == "sha256sums.txt") | .browser_download_url' | head -n 1)
 
 if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
     echo "[错误] 未检测到匹配的固件包！"
@@ -410,29 +518,42 @@ if [ "$1" = "check" ]; then
     exit 0
 fi
 
-echo "正在下载固件到本地内存..."
-rm -f "$TMP_IMG"
-curl -L -k --connect-timeout 15 -o "$TMP_IMG" "$DOWNLOAD_URL"
+echo "正在下载固件及校验文件到本地..."
+rm -f "$TMP_IMG" "$TMP_SHA"
+curl -L -s --connect-timeout 15 -o "$TMP_IMG" "$DOWNLOAD_URL"
+[ -n "$SHA_URL" ] && curl -L -s --connect-timeout 10 -o "$TMP_SHA" "$SHA_URL"
 
 if [ ! -s "$TMP_IMG" ]; then
     echo "[错误] 固件下载失败。"
     exit 1
 fi
 
-echo "固件完整性校验中..."
+if [ -s "$TMP_SHA" ]; then
+    echo "正在执行云端 SHA256 哈希比对..."
+    EXPECTED_SHA=$(grep "sysupgrade.bin" "$TMP_SHA" | awk '{print $1}' | head -n 1)
+    ACTUAL_SHA=$(sha256sum "$TMP_IMG" | awk '{print $1}')
+    if [ -n "$EXPECTED_SHA" ] && [ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]; then
+        echo "[安全阻断] SHA256 校验不匹配！预期: $EXPECTED_SHA, 实际: $ACTUAL_SHA"
+        rm -f "$TMP_IMG" "$TMP_SHA"
+        exit 1
+    fi
+    echo "SHA256 哈希比对完全一致！"
+fi
+
+echo "固件结构校验中..."
 if ! sysupgrade -t "$TMP_IMG"; then
-    echo "[错误] 固件校验不通过，已中止！"
-    rm -f "$TMP_IMG"
+    echo "[错误] 固件结构校验不通过，已中止！"
+    rm -f "$TMP_IMG" "$TMP_SHA"
     exit 1
 fi
 
-echo "校验通过，正在烧录至 Slot B (保留已有配置并重启)..."
+echo "校验通过，正在烧录至 Slot B 并重启..."
 sleep 2
 sysupgrade "$TMP_IMG"
 EOF
 chmod +x package/base-files/files/usr/bin/c8_autoupdate
 
-# 18. LuCI OTA 在线更新控制器 (全屏极客动效 + 实时流式终端 + 75秒探活重连)
+# 20. LuCI OTA 控制器 (CSRF 加固 + 精准排除检查模式误触)
 cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/controller/c8_autoupdate.lua
 module("luci.controller.c8_autoupdate", package.seeall)
 
@@ -442,6 +563,7 @@ function index()
 end
 
 function action_index()
+    local token = luci.http.formvalue("token") or luci.sys.uniqueid(16)
     local html = [[
         <style>
             #ota-reboot-overlay {
@@ -478,13 +600,13 @@ function action_index()
         <div id="ota-reboot-overlay">
             <div class="ota-spinner"></div>
             <div class="ota-title">固件烧录完毕，正在重启设备...</div>
-            <div class="ota-desc">Slot B 新系统正在初始化，硬件重新加载中，请勿切断电源</div>
+            <div class="ota-desc">Slot B 新系统正在初始化，请勿切断电源</div>
             <div class="ota-timer">预计就绪倒计时：<span id="ota-countdown">75</span> 秒</div>
         </div>
 
         <div class="cbi-map" id="cbi-autoupdate">
             <h2 name="content">在线更新 (NRadio C8-688)</h2>
-            <div class="cbi-map-descr">当前运行在 DualBoot 架构，一键升级将安全锁定并仅覆盖副系统 (Slot B)，出厂原厂系统物理绝缘免受冲击。</div>
+            <div class="cbi-map-descr">当前运行在 DualBoot 架构，一键升级仅覆盖副系统 (Slot B)，原厂系统物理隔离不受影响。</div>
             <fieldset class="cbi-section">
                 <legend>固件升级控制台</legend>
                 <div style="display: flex; gap: 12px; margin-bottom: 16px;">
@@ -506,6 +628,7 @@ function action_index()
 
                 function triggerRebootOverlay() {
                     var overlay = document.getElementById('ota-reboot-overlay');
+                    if (overlay.style.display === 'flex') return;
                     overlay.style.display = 'flex';
                     var seconds = 75;
                     var timerEl = document.getElementById('ota-countdown');
@@ -528,7 +651,7 @@ function action_index()
                             clearInterval(interval);
                             location.href = 'http://' + window.location.hostname;
                         };
-                        ping.src = 'http://' + window.location.hostname + '/luci-static/resources/cbi.css?t=' + new Date().getTime();
+                        ping.src = 'http://' + window.location.hostname + '/luci-static/resources/cbi.css?t=' + Date.now();
                     }, 3000);
                 }
 
@@ -541,8 +664,9 @@ function action_index()
                     btnUp.disabled = true;
                     out.innerText = (mode === 'check' ? '[任务] 正在查询 GitHub Release 最新固件信息...\n' : '[任务] 启动全自动下载、校验与烧录流程...\n');
                     
+                    var runUrl = ']] .. luci.dispatcher.build_url("admin", "system", "c8_autoupdate", "run") .. [[';
                     var xhr = new XMLHttpRequest();
-                    xhr.open('GET', ']] .. luci.dispatcher.build_url("admin", "system", "c8_autoupdate", "run") .. [[?mode=' + mode, true);
+                    xhr.open('GET', runUrl + '?mode=' + mode + '&token=]] .. token .. [[&_t=' + Date.now(), true);
                     var lastIndex = 0;
                     
                     xhr.onprogress = function() {
@@ -551,8 +675,8 @@ function action_index()
                         out.innerText += curr;
                         out.scrollTop = out.scrollHeight;
 
-                        if (curr.indexOf('正在烧录') !== -1 || curr.indexOf('Rebooting') !== -1 || curr.indexOf('sysupgrade') !== -1) {
-                            setTimeout(triggerRebootOverlay, 2500);
+                        if (mode === 'upgrade' && (curr.indexOf('正在烧录') !== -1 || curr.indexOf('Rebooting') !== -1)) {
+                            setTimeout(triggerRebootOverlay, 2000);
                         }
                     };
                     
@@ -560,9 +684,6 @@ function action_index()
                         out.scrollTop = out.scrollHeight;
                         btnCheck.disabled = false;
                         btnUp.disabled = false;
-                        if (mode === 'upgrade' && out.innerText.indexOf('校验通过') !== -1) {
-                            triggerRebootOverlay();
-                        }
                     };
                     
                     xhr.onerror = function() {
@@ -598,7 +719,7 @@ function action_run()
 end
 EOF
 
-# 19. Web 端双系统一键切换面板 (全屏遮罩 + 75秒平滑重启倒计时)
+# 21. LuCI 双系统切换面板 (CSRF 加固 + 75秒探活重连)
 cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/controller/dualboot.lua
 module("luci.controller.dualboot", package.seeall)
 
@@ -608,16 +729,21 @@ function index()
 end
 
 function action_dualboot()
+    local token = luci.http.formvalue("token") or luci.sys.uniqueid(16)
     local cur_boot = luci.util.exec("fw_printenv boot_part 2>/dev/null | awk -F'=' '{print $2}'")
+    if not cur_boot or cur_boot:gsub("%s+", "") == "" then
+        cur_boot = luci.util.exec("fw_printenv boot_system 2>/dev/null | awk -F'=' '{print $2}'")
+    end
     cur_boot = cur_boot and cur_boot:gsub("%s+", "") or "2"
+
     local html = [[
         <style>
             #boot-overlay {
                 display: none;
                 position: fixed;
                 top: 0; left: 0; width: 100vw; height: 100vh;
-                background: rgba(15, 23, 42, 0.92);
-                backdrop-filter: blur(8px);
+                background: rgba(15, 23, 42, 0.94);
+                backdrop-filter: blur(10px);
                 z-index: 99999;
                 flex-direction: column;
                 justify-content: center;
@@ -626,9 +752,9 @@ function action_dualboot()
                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             }
             .boot-spinner {
-                width: 64px;
-                height: 64px;
-                border: 4px solid rgba(255, 255, 255, 0.15);
+                width: 68px;
+                height: 68px;
+                border: 4px solid rgba(255, 255, 255, 0.12);
                 border-top: 4px solid #0072ff;
                 border-radius: 50%;
                 animation: spin 1s cubic-bezier(0.55, 0.15, 0.45, 0.85) infinite;
@@ -663,7 +789,7 @@ function action_dualboot()
                     <tr class="cbi-section-table-row">
                         <td><b>操作：</b></td>
                         <td>
-                            <button class="cbi-button cbi-button-apply" style="padding: 6px 18px;" onclick="triggerSwitch()">
+                            <button id="btn-switch" class="cbi-button cbi-button-apply" style="padding: 6px 18px;" onclick="triggerSwitch()">
                                 ]] .. (cur_boot == "1" and "🚀 切换到副系统 (Slot B)" or "🔄 一键切回原厂主系统 (Slot A)") .. [[
                             </button>
                         </td>
@@ -679,129 +805,20 @@ function action_dualboot()
                     return;
                 }
 
-                var overlay = document.getElementById('boot-overlay');
-                overlay.style.display = 'flex';
+                var btn = document.getElementById('btn-switch');
+                btn.disabled = true;
 
-                var seconds = 75;
-                var timerEl = document.getElementById('countdown');
-                var timer = setInterval(function() {
-                    seconds--;
-                    if (seconds <= 0) {
-                        clearInterval(timer);
-                        location.href = 'http://' + window.location.hostname;
-                    } else {
-                        timerEl.innerText = seconds;
-                    }
-                }, 1000);
-
+                var switchUrl = ']] .. luci.dispatcher.build_url("admin", "system", "dualboot", "switch") .. [[';
                 var xhr = new XMLHttpRequest();
-                xhr.open('GET', ']] .. luci.dispatcher.build_url("admin", "system", "dualboot", "switch") .. [[', true);
-                xhr.send();
-            }
-        </script>
-    ]]
-    luci.template.render_string(html)
-end
+                xhr.open('GET', switchUrl + '?token=]] .. token .. [[&_t=' + Date.now(), true);
+                
+                xhr.onload = function() {
+                    if (xhr.status === 200 && xhr.responseText.trim() === 'SUCCESS') {
+                        startCountdown();
+                    } else {
+                        alert('切换失败：权限认证未通过或底层写入异常 (HTTP ' + xhr.status + ')');
+                        btn.disabled = false;
+                    }
+                };
 
-function action_switch()
-    local cur_boot = luci.util.exec("fw_printenv boot_part 2>/dev/null | awk -F'=' '{print $2}'")
-    cur_boot = cur_boot and cur_boot:gsub("%s+", "") or "2"
-    local target = (cur_boot == "1") and "2" or "1"
-    luci.util.exec("fw_setenv boot_part " .. target)
-    luci.http.prepare_content("text/plain")
-    luci.http.write("OK")
-    luci.util.exec("(sleep 2 && sync && reboot) &")
-end
-EOF
-
-# 20. 自动将剩余 7GB eMMC (mmcblk0p10) 扩充为软件安装分区 (/overlay)
-cat << 'EOF' > package/base-files/files/etc/uci-defaults/99-auto-expand-overlay
-#!/bin/sh
-DATA_DEV="/dev/mmcblk0p10"
-
-if [ -b "$DATA_DEV" ]; then
-    if ! blkid "$DATA_DEV" | grep -qi "f2fs"; then
-        mkfs.f2fs -f -l data "$DATA_DEV"
-    fi
-
-    if ! uci -q show fstab | grep -q "$DATA_DEV"; then
-        mkdir -p /tmp/ext_data
-        mount -t f2fs "$DATA_DEV" /tmp/ext_data
-        
-        if [ -d "/overlay/upper" ]; then
-            cp -a /overlay/* /tmp/ext_data/ 2>/dev/null || true
-        fi
-        umount /tmp/ext_data
-        rm -rf /tmp/ext_data
-
-        uci -q delete fstab.overlay
-        uci set fstab.overlay=mount
-        uci set fstab.overlay.device="$DATA_DEV"
-        uci set fstab.overlay.target='/overlay'
-        uci set fstab.overlay.enabled='1'
-        uci commit fstab
-
-        ( sleep 2 && sync && reboot ) &
-    fi
-fi
-exit 0
-EOF
-chmod +x package/base-files/files/etc/uci-defaults/99-auto-expand-overlay
-
-# 21. 拉取 MT5700M 模组控制面板
-if [ ! -d "package/luci-app-mt5700m" ]; then
-    git clone --depth=1 https://github.com/FAN789/luci-app-mt5700m.git package/luci-app-mt5700m 2>/dev/null || true
-fi
-
-# 22. 模组默认串口锁定为 ttyUSB1
-cat << 'EOF' > package/base-files/files/etc/uci-defaults/98-mt5700m-default
-#!/bin/sh
-if [ -f /etc/config/mt5700m ]; then
-    uci -q batch << EOU
-set mt5700m.@mt5700m[0].port='/dev/ttyUSB1'
-commit mt5700m
-EOU
-fi
-exit 0
-EOF
-chmod +x package/base-files/files/etc/uci-defaults/98-mt5700m-default
-
-# 23. 拉取风扇温控插件
-if [ ! -d "package/luci-app-h5000m-fancontrol" ]; then
-    git clone --depth=1 https://github.com/FAN789/luci-app-h5000m-fancontrol.git package/luci-app-h5000m-fancontrol 2>/dev/null || true
-fi
-
-# 24. 拉取短信收发与基站看板
-if [ ! -d "package/luci-app-sms-tool-js" ]; then
-    git clone --depth=1 https://github.com/4IceG/luci-app-sms-tool-js.git package/luci-app-sms-tool-js 2>/dev/null || true
-fi
-if [ ! -d "package/sms-tool" ] && [ ! -d "package/feeds/packages/sms-tool" ]; then
-    git clone --depth=1 https://github.com/4IceG/openwrt-sms-tool.git package/sms-tool 2>/dev/null || true
-fi
-if [ ! -d "package/luci-app-3ginfo-lite" ]; then
-    git clone --depth=1 https://github.com/4IceG/luci-app-3ginfo-lite.git package/luci-app-3ginfo-lite 2>/dev/null || true
-fi
-
-# 25. 规范短信收发与 3Ginfo 基站看板的默认通信串口 (适配 sms-tool-js 配置节点)
-cat << 'EOF' > package/base-files/files/etc/uci-defaults/99-cellular-addons-default
-#!/bin/sh
-if [ -f /etc/config/sms_tool ]; then
-    uci -q batch << EOU
-set sms_tool.main=sms_tool
-set sms_tool.main.read_port='/dev/ttyUSB1'
-set sms_tool.main.send_port='/dev/ttyUSB1'
-commit sms_tool
-EOU
-fi
-
-if [ -f /etc/config/3ginfo ]; then
-    uci -q batch << EOU
-set 3ginfo.@3ginfo[0].device='/dev/ttyUSB1'
-commit 3ginfo
-EOU
-fi
-exit 0
-EOF
-chmod +x package/base-files/files/etc/uci-defaults/99-cellular-addons-default
-
-exit 0
+   
