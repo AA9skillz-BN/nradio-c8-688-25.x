@@ -17,8 +17,7 @@
 	};
 
 	chosen {
-		/* 严格对齐 Slot B 的 rootfs 实际挂载分区 mmcblk0p9 */
-		bootargs = "console=ttyS0,115200n8 root=/dev/mmcblk0p9 rootwait rootfstype=squashfs,f2fs,ext4";
+		bootargs = "console=ttyS0,115200n1 loglevel=8 root=/dev/mmcblk0p9 rootwait rootfstype=squashfs,f2fs";
 	};
 
 	memory@40000000 {
@@ -26,56 +25,97 @@
 		reg = <0 0x40000000 0 0x40000000>; /* 1024MB (1GB) RAM */
 	};
 
-	keys {
+	/* 实体按键映射：Reset (GPIO 1), WPS (GPIO 9) */
+	keys: gpio-keys {
 		compatible = "gpio-keys";
 
 		reset {
 			label = "reset";
-			gpios = <&pio 1 GPIO_ACTIVE_LOW>;
 			linux,code = <KEY_RESTART>;
+			gpios = <&pio 1 GPIO_ACTIVE_LOW>;
+		};
+
+		wps {
+			label = "wps";
+			linux,code = <KEY_WPS_BUTTON>;
+			gpios = <&pio 9 GPIO_ACTIVE_LOW>;
 		};
 	};
 
-	leds {
+	/* 5G 模组电源拉起与风扇常开控制 */
+	gpio_export {
+		compatible = "gpio-export";
+		#size-cells = <0>;
+
+		cpepower {
+			gpio-export,name = "cpe-pwr";
+			gpio-export,output = <0>;
+			gpios = <&pio 31 GPIO_ACTIVE_LOW>;
+		};
+
+		fanpower {
+			gpio-export,name = "fan-hw";
+			gpio-export,output = <0>;
+			gpios = <&pio 27 GPIO_ACTIVE_HIGH>;
+		};
+
+		fanfg {
+			gpio-export,name = "fan-fg";
+			gpio-export,output = <1>;
+			gpios = <&pio 28 GPIO_ACTIVE_HIGH>;
+		};
+
+		cpesel0 {
+			gpio-export,name = "cpe-sel0";
+			gpio-export,output = <1>;
+			gpios = <&pio 29 GPIO_ACTIVE_HIGH>;
+		};
+
+		cpesel1 {
+			gpio-export,name = "cpe-sel1";
+			gpio-export,output = <1>;
+			gpios = <&pio 30 GPIO_ACTIVE_HIGH>;
+		};
+	};
+
+	/* 真实状态与网络指示灯 */
+	leds: gpio-leds {
 		compatible = "gpio-leds";
 
 		led_status: status {
 			label = "blue:status";
-			gpios = <&pio 9 GPIO_ACTIVE_HIGH>;
+			gpios = <&pio 10 GPIO_ACTIVE_LOW>;
 			default-state = "on";
 		};
 
-		net {
-			label = "green:net";
-			gpios = <&pio 10 GPIO_ACTIVE_HIGH>;
+		cmode5 {
+			label = "blue:5g";
+			gpios = <&pio 11 GPIO_ACTIVE_LOW>;
 			default-state = "off";
 		};
+
+		cmode4 {
+			label = "blue:4g";
+			gpios = <&pio 12 GPIO_ACTIVE_LOW>;
+			default-state = "off";
+		};
+
+		wifi {
+			label = "blue:wifi";
+			gpios = <&pio 34 GPIO_ACTIVE_LOW>;
+			linux,default-trigger = "phy0tpt";
+		};
 	};
 
-	/* 为 luci-app-h5000m-fancontrol 提供底层的 hwmon pwm-fan 设备接口 */
+	/* 硬件温控 PWM 风扇 */
 	fan: pwm-fan {
 		compatible = "pwm-fan";
-		pwms = <&pwm 0 50000 0>;
-		cooling-levels = <0 64 128 192 255>;
+		cooling-min-state = <0>;
+		cooling-max-state = <3>;
 		#cooling-cells = <2>;
+		pwms = <&pwm 0 40000 0>;
+		cooling-levels = <127 166 204 255>;
 		status = "okay";
-	};
-};
-
-/* 定义芯片引脚复用 (Pinctrl) */
-&pio {
-	emmc_pins: emmc-pins {
-		mux {
-			function = "emmc";
-			groups = "emmc_51";
-		};
-	};
-
-	pwm0_pins: pwm0-pins {
-		mux {
-			function = "pwm";
-			groups = "pwm0";
-		};
 	};
 };
 
@@ -87,7 +127,42 @@
 	status = "okay";
 };
 
-/* 以太网 MAC 控制器 */
+/* 芯片引脚复用 (严格采用原厂 emmc_45 与 pwm0_0) */
+&pio {
+	mmc0_pins_default: mmc0-pins-default {
+		mux {
+			function = "flash";
+			groups = "emmc_45";
+		};
+	};
+
+	pwm0_pin: pwm0-pin-g0 {
+		mux {
+			function = "pwm";
+			groups = "pwm0_0";
+		};
+	};
+};
+
+/* eMMC 5.1 控制器 */
+&mmc0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&mmc0_pins_default>;
+	bus-width = <8>;
+	max-frequency = <52000000>;
+	cap-mmc-highspeed;
+	non-removable;
+	status = "okay";
+};
+
+/* 硬件 PWM 控制器 */
+&pwm {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pwm0_pin>;
+	status = "okay";
+};
+
+/* 以太网 MAC 控制器与 MT7531 交换芯片配置 */
 &eth {
 	status = "okay";
 
@@ -95,44 +170,93 @@
 		compatible = "mediatek,eth-mac";
 		reg = <0>;
 		phy-mode = "2500base-x";
-		phy-handle = <&phy_ext>;
+
+		fixed-link {
+			speed = <2500>;
+			full-duplex;
+			pause;
+		};
 	};
 
 	gmac1: mac@1 {
 		compatible = "mediatek,eth-mac";
 		reg = <1>;
-		phy-mode = "gmii";
-		phy-handle = <&phy0>;
+		phy-mode = "2500base-x";
+
+		fixed-link {
+			speed = <2500>;
+			full-duplex;
+			pause;
+		};
 	};
 };
 
-/* MDIO 总线与 PHY 映射 */
 &mdio_bus {
 	status = "okay";
 
-	phy0: ethernet-phy@0 {
-		compatible = "ethernet-phy-id03a2.9461";
-		reg = <0>;
-		phy-mode = "gmii";
-	};
-
-	phy_ext: ethernet-phy@1 {
-		reg = <1>;
-		phy-mode = "2500base-x";
+	phy5: phy@5 {
+		compatible = "ethernet-phy-id67c9.de0a";
+		reg = <5>;
 		reset-gpios = <&pio 7 GPIO_ACTIVE_LOW>;
-		reset-assert-us = <10000>;
+		reset-assert-us = <600>;
 		reset-deassert-us = <20000>;
+		phy-mode = "2500base-x";
 	};
-};
 
-&mmc0 {
-	pinctrl-names = "default";
-	pinctrl-0 = <&emmc_pins>;
-	bus-width = <8>;
-	max-frequency = <52000000>;
-	cap-mmc-highspeed;
-	non-removable;
-	status = "okay";
+	phy6: phy@6 {
+		compatible = "ethernet-phy-id67c9.de0a";
+		reg = <21>;
+		reset-gpios = <&pio 8 GPIO_ACTIVE_LOW>;
+		reset-assert-us = <600>;
+		reset-deassert-us = <20000>;
+		phy-mode = "2500base-x";
+	};
+
+	switch@0 {
+		compatible = "mediatek,mt7531";
+		reg = <31>;
+		reset-gpios = <&pio 39 GPIO_ACTIVE_HIGH>;
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@1 {
+				reg = <1>;
+				label = "lan1";
+			};
+
+			port@2 {
+				reg = <2>;
+				label = "lan2";
+			};
+
+			port@3 {
+				reg = <3>;
+				label = "lan3";
+			};
+
+			port@5 {
+				reg = <5>;
+				label = "wan";
+				phy-mode = "2500base-x";
+				phy-handle = <&phy5>;
+			};
+
+			port@6 {
+				reg = <6>;
+				label = "cpu";
+				ethernet = <&gmac0>;
+				phy-mode = "2500base-x";
+
+				fixed-link {
+					speed = <2500>;
+					full-duplex;
+					pause;
+				};
+			};
+		};
+	};
 };
 
 &usb_phy {
@@ -143,14 +267,6 @@
 	status = "okay";
 };
 
-/* 激活硬件 PWM 控制器并绑定引脚 */
-&pwm {
-	pinctrl-names = "default";
-	pinctrl-0 = <&pwm0_pins>;
-	status = "okay";
-};
-
-/* 激活 MT7981 内置 Wi-Fi 模块 */
 &wifi {
 	status = "okay";
 };
