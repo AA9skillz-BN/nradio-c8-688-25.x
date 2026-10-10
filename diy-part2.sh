@@ -986,12 +986,267 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/99-cellular-addons-default
 # =============================================================================
-# NRadio C8-688 专属 MYOS 沉浸式中控台 (包含一级/二级菜单闭环与全套硬件感知)
+# NRadio C8-688 MYOS 风格全系统级无死角主题接管 (全局一二三级页面/控件统一)
 # =============================================================================
+mkdir -p package/base-files/files/www/luci-static/resources
+mkdir -p package/base-files/files/etc/uci-defaults
 mkdir -p package/base-files/files/usr/lib/lua/luci/controller
 mkdir -p package/base-files/files/usr/lib/lua/luci/view/c8
 
-# 1. 后端数据采集控制器 (实时获取 DSA 网口、5G 模组 AT、温度与存储)
+# -----------------------------------------------------------------------------
+# 1. 编译全局 CSS 覆盖层 (接管系统内所有插件、配置页、表格与表单)
+# -----------------------------------------------------------------------------
+cat << 'EOF' > package/base-files/files/www/luci-static/resources/c8-global-myos.css
+/* -------------------------------------------------------------
+ * NRadio C8-688 MYOS 全局系统统一设计规范 (无割裂感全局接管)
+ * ----------------------------------------------------------- */
+:root {
+    --c8-base: #f7f6f0;
+    --c8-card: #ffffff;
+    --c8-card-sub: #faf9f5;
+    --c8-sub-slot: #ece9df;
+    --c8-main: #1f2937;
+    --c8-muted: #6b7280;
+    --c8-gold: #c27803;
+    --c8-gold-bg: #faeed9;
+    --c8-emerald: #059669;
+    --c8-border: rgba(0, 0, 0, 0.06);
+    --c8-radius: 16px;
+    --c8-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.04);
+}
+
+/* 1. 全局字体与底层画布 */
+body, html {
+    background-color: var(--c8-base) !important;
+    color: var(--c8-main) !important;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif !important;
+    -webkit-font-smoothing: antialiased !important;
+}
+
+/* 2. 顶部 Header 与 侧边栏全局接管 */
+header, .main > header {
+    background: #ffffff !important;
+    border-bottom: 1px solid var(--c8-border) !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02) !important;
+}
+
+.main > aside, nav.side-nav, #mainmenu {
+    background: var(--c8-base) !important;
+    border-right: 1px solid var(--c8-border) !important;
+    box-shadow: none !important;
+}
+
+/* 侧边栏品牌字样 */
+.brand, .main > aside .brand {
+    color: var(--c8-main) !important;
+    font-weight: 800 !important;
+    font-size: 20px !important;
+    letter-spacing: -0.5px !important;
+    padding: 24px 20px 12px !important;
+    display: flex !important;
+    align-items: center !important;
+    gap: 8px !important;
+}
+
+.brand::after {
+    content: "NRadio-C8-New688";
+    display: block;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--c8-muted);
+    letter-spacing: 0.2px;
+    margin-top: 4px;
+}
+
+/* 一级菜单胶囊 */
+.main > aside .menu-item, nav.side-nav > ul > li > a, #mainmenu > li > a {
+    color: #4b5563 !important;
+    font-size: 14px !important;
+    font-weight: 600 !important;
+    border-radius: 14px !important;
+    margin: 4px 12px !important;
+    padding: 10px 16px !important;
+    display: flex !important;
+    align-items: center !important;
+    gap: 12px !important;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+/* 激活选中的一级胶囊 */
+.main > aside .menu-item.active, 
+nav.side-nav > ul > li.active > a, 
+nav.side-nav li a[href*="c8_home"] {
+    background: var(--c8-gold-bg) !important;
+    color: var(--c8-gold) !important;
+    font-weight: 700 !important;
+    box-shadow: 0 2px 10px rgba(194, 120, 3, 0.12) !important;
+}
+
+nav.side-nav > ul > li > a:hover {
+    background: #eae8df !important;
+    color: var(--c8-main) !important;
+}
+
+/* 3. 二级菜单卡槽 (解决突兀) */
+.main > aside ul ul, nav.side-nav ul ul, #mainmenu ul, .slide-menu {
+    background: var(--c8-sub-slot) !important;
+    border-radius: 14px !important;
+    margin: 4px 14px 10px 18px !important;
+    padding: 6px 8px !important;
+    border-left: 2px solid rgba(194, 120, 3, 0.25) !important;
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.04) !important;
+    list-style: none !important;
+}
+
+.main > aside ul ul li a, nav.side-nav ul ul li a, #mainmenu ul li a {
+    color: #6b7280 !important;
+    font-size: 13px !important;
+    font-weight: 500 !important;
+    border-radius: 10px !important;
+    margin: 3px 0 !important;
+    padding: 7px 14px !important;
+    transition: all 0.18s ease !important;
+}
+
+.main > aside ul ul li a:hover, nav.side-nav ul ul li a:hover {
+    background: #ffffff !important;
+    color: var(--c8-main) !important;
+    font-weight: 600 !important;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04) !important;
+}
+
+.main > aside ul ul li.active a, nav.side-nav ul ul li.active > a {
+    background: #ffffff !important;
+    color: var(--c8-gold) !important;
+    font-weight: 700 !important;
+    box-shadow: 0 2px 8px rgba(194, 120, 3, 0.15) !important;
+}
+
+/* 4. 三级选项卡 (Tabs) 全局接管 */
+.cbi-tabmenu, ul.tabs {
+    background: transparent !important;
+    border-bottom: 2px solid #e5e7eb !important;
+    margin-bottom: 20px !important;
+    display: flex !important;
+    gap: 8px !important;
+}
+
+.cbi-tabmenu > li > a, ul.tabs > li > a {
+    color: var(--c8-muted) !important;
+    font-size: 14px !important;
+    font-weight: 600 !important;
+    padding: 8px 16px !important;
+    border-radius: 10px 10px 0 0 !important;
+    border: none !important;
+    background: transparent !important;
+}
+
+.cbi-tabmenu > li.cbi-tab > a, ul.tabs > li.active > a {
+    color: var(--c8-gold) !important;
+    border-bottom: 2px solid var(--c8-gold) !important;
+    font-weight: 700 !important;
+}
+
+/* 5. 全局配置页面面板与卡片 (彻底消除配置页生硬白底) */
+.cbi-map, .cbi-section, .panel, .cbi-section-node {
+    background: var(--c8-card) !important;
+    border-radius: var(--c8-radius) !important;
+    padding: 24px !important;
+    margin-bottom: 24px !important;
+    border: 1px solid var(--c8-border) !important;
+    box-shadow: var(--c8-shadow) !important;
+}
+
+/* 6. 表格全局美化 (消除死板灰黑网格) */
+table, .cbi-section-table {
+    border-collapse: separate !important;
+    border-spacing: 0 6px !important;
+    background: transparent !important;
+}
+
+thead th, .cbi-section-table-titles th {
+    background: transparent !important;
+    color: var(--c8-muted) !important;
+    font-size: 13px !important;
+    font-weight: 600 !important;
+    border-bottom: 1px solid var(--c8-border) !important;
+    padding: 10px 14px !important;
+}
+
+tbody tr, .cbi-section-table-row {
+    background: var(--c8-card-sub) !important;
+    border-radius: 10px !important;
+    transition: all 0.2s ease !important;
+}
+
+tbody tr:hover, .cbi-section-table-row:hover {
+    background: #f1eee4 !important;
+}
+
+tbody td, .cbi-section-table-row td {
+    padding: 12px 14px !important;
+    border: none !important;
+}
+
+/* 7. 输入框、选择框与主按钮 */
+input[type="text"], input[type="password"], select {
+    background: #ffffff !important;
+    border: 1px solid #d1d5db !important;
+    border-radius: 10px !important;
+    padding: 8px 12px !important;
+    color: var(--c8-main) !important;
+    outline: none !important;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
+}
+
+input[type="text"]:focus, input[type="password"]:focus, select:focus {
+    border-color: var(--c8-gold) !important;
+    box-shadow: 0 0 0 3px rgba(194, 120, 3, 0.15) !important;
+}
+
+.cbi-button-apply, .cbi-button-save, .btn-primary {
+    background: linear-gradient(135deg, #d97706 0%, #b45309 100%) !important;
+    color: #ffffff !important;
+    font-weight: 700 !important;
+    border: none !important;
+    border-radius: 10px !important;
+    padding: 8px 22px !important;
+    box-shadow: 0 4px 12px rgba(217, 119, 6, 0.25) !important;
+    cursor: pointer !important;
+    transition: transform 0.15s ease !important;
+}
+
+.cbi-button-apply:hover, .btn-primary:hover {
+    transform: translateY(-1px) !important;
+    box-shadow: 0 6px 16px rgba(217, 119, 6, 0.35) !important;
+}
+
+/* 图标映射 */
+nav.side-nav li a[href*="c8_home"]::before { content: "🏠"; font-size: 15px; }
+nav.side-nav li a[href*="status"]::before  { content: "📊"; font-size: 15px; }
+nav.side-nav li a[href*="system"]::before  { content: "⚙️"; font-size: 15px; }
+nav.side-nav li a[href*="network"]::before { content: "📶"; font-size: 15px; }
+nav.side-nav li a[href*="modem"]::before   { content: "📡"; font-size: 15px; }
+nav.side-nav li a[href*="logout"]::before  { content: "🚪"; font-size: 15px; }
+EOF
+
+# -----------------------------------------------------------------------------
+# 2. 全局注入挂载脚本：强行向 LuCI 系统模板头部注入全局样式表与搜索框
+# -----------------------------------------------------------------------------
+cat << 'EOF' > package/base-files/files/etc/uci-defaults/99-inject-c8-global-myos
+#!/bin/sh
+for h in $(find /usr/lib/lua/luci/view/ -name "header.htm" 2>/dev/null); do
+    if [ -f "$h" ] && ! grep -q "c8-global-myos.css" "$h"; then
+        sed -i '/<\/head>/i <link rel="stylesheet" type="text/css" href="/luci-static/resources/c8-global-myos.css">' "$h"
+    fi
+done
+exit 0
+EOF
+chmod +x package/base-files/files/etc/uci-defaults/99-inject-c8-global-myos
+
+# -----------------------------------------------------------------------------
+# 3. 后端数据采集控制器 (负责首页中控)
+# -----------------------------------------------------------------------------
 cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/controller/c8_home.lua
 module("luci.controller.c8_home", package.seeall)
 
@@ -1067,151 +1322,12 @@ function action_status()
 end
 EOF
 
-# 2. 前端模板：一二级菜单深度定制 + 现代中控台
+# -----------------------------------------------------------------------------
+# 4. 前端首页中控驾驶舱页面 (专用于 C8-688 首页展示)
+# -----------------------------------------------------------------------------
 cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/view/c8/home_view.htm
 <%+header%>
 <style>
-/* ---------------- 现代化字体栈与全局色彩 ---------------- */
-:root {
-    --c8-base: #f7f6f0;
-    --c8-card: #ffffff;
-    --c8-card-sub: #faf9f5;
-    --c8-sub-slot: #ece9df;
-    --c8-main: #1f2937;
-    --c8-muted: #6b7280;
-    --c8-gold: #c27803;
-    --c8-gold-bg: #faeed9;
-    --c8-emerald: #059669;
-    --c8-radius: 18px;
-    --c8-shadow: 0 4px 24px -2px rgba(0, 0, 0, 0.05);
-}
-
-body, input, button, select {
-    background-color: var(--c8-base) !important;
-    color: var(--c8-main) !important;
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif !important;
-    -webkit-font-smoothing: antialiased !important;
-    -moz-osx-font-smoothing: grayscale !important;
-    text-rendering: optimizeLegibility !important;
-    letter-spacing: -0.01em;
-}
-
-/* ---------------- 侧边栏与导航顶栏深度重构 ---------------- */
-header, .main > header {
-    background: #ffffff !important;
-    border-bottom: 1px solid rgba(0, 0, 0, 0.05) !important;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02) !important;
-}
-
-.main > aside, nav.side-nav, #mainmenu {
-    background: var(--c8-base) !important;
-    border-right: 1px solid rgba(0, 0, 0, 0.06) !important;
-    box-shadow: none !important;
-}
-
-.brand, .main > aside .brand {
-    color: var(--c8-main) !important;
-    font-weight: 800 !important;
-    font-size: 20px !important;
-    letter-spacing: -0.5px !important;
-    padding: 26px 20px 12px !important;
-    display: flex !important;
-    align-items: center !important;
-    gap: 8px !important;
-}
-
-.brand::after {
-    content: "NRadio-C8-New688";
-    display: block;
-    font-size: 11px;
-    font-weight: 500;
-    color: var(--c8-muted);
-    letter-spacing: 0.2px;
-    margin-top: 4px;
-}
-
-/* 一级菜单项：微圆角胶囊 */
-.main > aside .menu-item, nav.side-nav > ul > li > a, #mainmenu > li > a {
-    color: #4b5563 !important;
-    font-size: 14px !important;
-    font-weight: 600 !important;
-    border-radius: 14px !important;
-    margin: 4px 12px !important;
-    padding: 10px 16px !important;
-    display: flex !important;
-    align-items: center !important;
-    gap: 12px !important;
-    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
-    position: relative !important;
-}
-
-/* 激活选中的一级胶囊 */
-.main > aside .menu-item.active, 
-nav.side-nav > ul > li.active > a, 
-nav.side-nav li a[href*="c8_home"] {
-    background: var(--c8-gold-bg) !important;
-    color: var(--c8-gold) !important;
-    font-weight: 700 !important;
-    box-shadow: 0 2px 10px rgba(194, 120, 3, 0.12) !important;
-}
-
-nav.side-nav > ul > li > a:hover {
-    background: #eae8df !important;
-    color: var(--c8-main) !important;
-    transform: translateX(2px);
-}
-
-/* ---------------- 二级菜单专项深度美化 (彻底解决突兀问题) ---------------- */
-/* 展开的二级菜单卡槽容器 */
-.main > aside ul ul, nav.side-nav ul ul, #mainmenu ul, .slide-menu {
-    background: var(--c8-sub-slot) !important;
-    border-radius: 14px !important;
-    margin: 4px 14px 10px 18px !important;
-    padding: 6px 8px !important;
-    border-left: 2px solid rgba(194, 120, 3, 0.25) !important;
-    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.04) !important;
-    list-style: none !important;
-}
-
-/* 二级子菜单项按钮 */
-.main > aside ul ul li a, nav.side-nav ul ul li a, #mainmenu ul li a {
-    color: #6b7280 !important;
-    font-size: 13px !important;
-    font-weight: 500 !important;
-    border-radius: 10px !important;
-    margin: 3px 0 !important;
-    padding: 7px 14px !important;
-    display: flex !important;
-    align-items: center !important;
-    transition: all 0.18s ease !important;
-}
-
-/* 二级菜单悬停反馈 */
-.main > aside ul ul li a:hover, nav.side-nav ul ul li a:hover {
-    background: #ffffff !important;
-    color: var(--c8-main) !important;
-    font-weight: 600 !important;
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04) !important;
-    transform: translateX(3px) !important;
-}
-
-/* 二级菜单当前选中激活态 */
-.main > aside ul ul li.active a, nav.side-nav ul ul li.active > a {
-    background: #ffffff !important;
-    color: var(--c8-gold) !important;
-    font-weight: 700 !important;
-    box-shadow: 0 2px 8px rgba(194, 120, 3, 0.15) !important;
-}
-
-/* 伪元素图标映射 */
-nav.side-nav li a[href*="c8_home"]::before { content: "🏠"; font-size: 15px; }
-nav.side-nav li a[href*="status"]::before  { content: "📊"; font-size: 15px; }
-nav.side-nav li a[href*="system"]::before  { content: "⚙️"; font-size: 15px; }
-nav.side-nav li a[href*="network"]::before { content: "📶"; font-size: 15px; }
-nav.side-nav li a[href*="modem"]::before   { content: "📡"; font-size: 15px; }
-nav.side-nav li a[href*="logout"]::before  { content: "🚪"; font-size: 15px; }
-
-/* ---------------- 中控驾驶舱主区域 ---------------- */
 .c8-wrap {
     max-width: 1400px;
     margin: 10px auto 40px auto;
@@ -1233,7 +1349,7 @@ nav.side-nav li a[href*="logout"]::before  { content: "🚪"; font-size: 15px; }
     border-radius: var(--c8-radius);
     padding: 24px;
     box-shadow: var(--c8-shadow);
-    border: 1px solid rgba(0,0,0,0.03);
+    border: 1px solid var(--c8-border);
     margin-bottom: 20px;
     transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
@@ -1341,7 +1457,6 @@ nav.side-nav li a[href*="logout"]::before  { content: "🚪"; font-size: 15px; }
     background: #ffffff;
     border: 1px solid #e5e7eb;
     color: var(--c8-muted);
-    transition: all 0.2s ease;
 }
 
 .port-pill.active {
@@ -1431,7 +1546,6 @@ nav.side-nav li a[href*="logout"]::before  { content: "🚪"; font-size: 15px; }
 
 <div class="c8-wrap">
     <div class="c8-grid">
-        <!-- 左侧核心区 -->
         <div>
             <div class="card hero-card">
                 <div class="hero-top">
@@ -1494,7 +1608,6 @@ nav.side-nav li a[href*="logout"]::before  { content: "🚪"; font-size: 15px; }
             </div>
         </div>
 
-        <!-- 右侧蜂窝中枢 -->
         <div>
             <div class="card" style="padding: 18px 22px;">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
