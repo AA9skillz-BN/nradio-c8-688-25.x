@@ -39,7 +39,7 @@ jobs:
         docker-images: true
         swap-storage: true
 
-   - name: Initialize Environment
+    - name: Initialize Environment
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
