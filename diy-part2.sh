@@ -78,7 +78,8 @@ board_config_update
 
 case "$(board_name)" in
 nradio,c8-688|nradio,c8-668)
-    ucidef_set_interfaces_lan_wan "lan1 lan2 lan3" "wan"
+    ucidef_set_interface_lan "lan1 lan2 lan3"
+    ucidef_set_interface_wan "wan"
     ;;
 esac
 
@@ -1270,7 +1271,7 @@ EOF
 # 2. 全局样式注入钩子
 cat << 'EOF' > package/base-files/files/etc/uci-defaults/99-inject-c8-global-myos
 #!/bin/sh
-for h in $(find /usr/lib/lua/luci/view/ -name "header.htm" 2>/dev/null); do
+for h in $(find /usr/lib/lua/luci/view/ /usr/share/ucode/luci/template/ -name "header.htm" -o -name "header.ut" 2>/dev/null); do
     if [ -f "$h" ] && ! grep -q "c8-global-myos.css" "$h"; then
         sed -i '/<\/head>/i <link rel="stylesheet" type="text/css" href="/luci-static/resources/c8-global-myos.css">' "$h"
     fi
