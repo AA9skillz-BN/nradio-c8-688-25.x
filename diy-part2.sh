@@ -948,6 +948,10 @@ if [ ! -d "package/luci-app-3ginfo-lite" ]; then
     git clone --depth=1 https://github.com/4IceG/luci-app-3ginfo-lite.git package/luci-app-3ginfo-lite 2>/dev/null || true
 fi
 
+if [ ! -d "package/at-webserver" ]; then
+    git clone --depth=1 https://github.com/kossev-bg/at-webserver.git package/at-webserver 2>/dev/null || true
+fi
+
 # 24. 模组与短信插件默认通信串口智能配置 (自适应探测可用串口)
 cat << 'EOF' > package/base-files/files/etc/uci-defaults/99-cellular-addons-default
 #!/bin/sh
