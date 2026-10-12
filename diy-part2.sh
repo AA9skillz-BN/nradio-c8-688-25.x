@@ -1207,6 +1207,64 @@ nav.side-nav li a[href*="logout"]::before  { content: "🚪"; font-size: 15px; }
         overflow-x: auto !important;
     }
 }
+
+/* =============================================================================
+   MYOS 精致进阶补丁：自定义滚动条 / 登录框高级质感 / 平滑开关
+   ============================================================================= */
+/* 1. 微型优雅滚动条 */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.12); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--c8-gold); }
+
+/* 2. 原生 Checkbox 升级为现代平滑开关 */
+input[type="checkbox"] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 38px;
+    height: 22px;
+    background: #e5e7eb;
+    border-radius: 20px;
+    position: relative;
+    outline: none;
+    cursor: pointer;
+    transition: background 0.25s ease;
+    vertical-align: middle;
+}
+input[type="checkbox"]::after {
+    content: "";
+    position: absolute;
+    top: 2px; left: 2px;
+    width: 18px; height: 18px;
+    background: #ffffff;
+    border-radius: 50%;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+    transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+input[type="checkbox"]:checked {
+    background: var(--c8-emerald) !important;
+}
+input[type="checkbox"]:checked::after {
+    transform: translateX(16px);
+}
+
+/* 3. 输入框聚焦金色柔和光晕 */
+input[type="text"]:focus, input[type="password"]:focus, select:focus {
+    border-color: var(--c8-gold) !important;
+    box-shadow: 0 0 0 3px rgba(194, 120, 3, 0.15) !important;
+}
+
+/* 4. 登录页面优雅融合 (Argon 登录适配) */
+.login-page .login-container {
+    background: rgba(255, 255, 255, 0.92) !important;
+    backdrop-filter: blur(20px) !important;
+    border: 1px solid rgba(255, 255, 255, 0.8) !important;
+    box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.08) !important;
+    border-radius: 24px !important;
+}
+.login-page .brand {
+    justify-content: center !important;
+}
 EOF
 
 # 2. 全局样式注入钩子
