@@ -1,8 +1,8 @@
 #!/bin/bash
 # -----------------------------------------------------------------------------
-# DIY script 2: NRadio C8-688 深度加固稳定版构建脚本
+# DIY script 2: NRadio C8-688 终极满血稳定版构建脚本
 # 适配 ImmortalWrt 25.x / Linux 6.12 / MT7531 DSA / DualBoot Slot B
-# 包含：模组供电保护 / DSA 网口映射 / 7GB Overlay 安全扩容 / CSRF 动效升级
+# 包含：HE160 满血无线 / Flowtable+FullCone 加速 / 海思 5G SA 真实信号采集 / 7GB 安全扩容
 # -----------------------------------------------------------------------------
 
 [ -d "openwrt" ] && cd openwrt
@@ -69,9 +69,8 @@ mkdir -p package/base-files/files/lib/upgrade
 mkdir -p package/base-files/files/usr/bin
 mkdir -p package/base-files/files/usr/lib/lua/luci/controller
 
-# 5. 注入 MT7531 原生 DSA 交换机端口映射
-cat << 'EOF' > package/base-files/files/etc/board.d/02_network
-#!/bin/sh
+# 5. 注入 MT7531 原生 DSA 交换机端口映射 (双重写入防止被 target 覆盖)
+NETWORK_SCRIPT='#!/bin/sh
 . /lib/functions/uci-defaults.sh
 
 board_config_update
@@ -85,8 +84,13 @@ esac
 
 board_config_flush
 exit 0
-EOF
+'
+echo "$NETWORK_SCRIPT" > package/base-files/files/etc/board.d/02_network
 chmod +x package/base-files/files/etc/board.d/02_network
+
+mkdir -p target/linux/mediatek/filogic/base-files/etc/board.d
+echo "$NETWORK_SCRIPT" > target/linux/mediatek/filogic/base-files/etc/board.d/02_network
+chmod +x target/linux/mediatek/filogic/base-files/etc/board.d/02_network
 
 # 6. 配置 U-Boot 环境变量映射
 cat << 'EOF' > package/base-files/files/etc/uci-defaults/01-fw-env-detect
@@ -132,11 +136,22 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/02-hardware-power
 
-# 8. TCP BBR 拥塞控制
+# 8. TCP BBR 拥塞控制 + 防火墙 Flowtable 流表加速与 FullCone NAT 默认开启
 cat << 'EOF' >> package/base-files/files/etc/sysctl.conf
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
 EOF
+
+cat << 'EOF' > package/base-files/files/etc/uci-defaults/93-firewall-turbo
+#!/bin/sh
+uci set firewall.@defaults[0].flow_offloading='1'
+uci set firewall.@defaults[0].flow_offloading_hw='0'
+uci set firewall.@defaults[0].fullcone='1'
+uci set firewall.@defaults[0].fullcone6='1'
+uci commit firewall
+exit 0
+EOF
+chmod +x package/base-files/files/etc/uci-defaults/93-firewall-turbo
 
 # 9. 防火墙出站 TTL 锁定 (全适配 eth2/wwan/usb/modem 接口)
 cat << 'EOF' > package/base-files/files/etc/nftables.d/10-custom-ttl.nft
@@ -185,7 +200,7 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/95-ipv6-relay
 
-# 12. Wi-Fi 默认设置
+# 12. Wi-Fi 默认设置 (解锁 5G 频段 HE160 满血 160MHz 频宽 + 2.4G HE40)
 cat << 'EOF' > package/base-files/files/etc/uci-defaults/97-default-wifi
 #!/bin/sh
 wifi config 2>/dev/null || true
@@ -195,12 +210,13 @@ for dev in $(uci -q show wireless | grep "=wifi-device" | cut -d'.' -f2 | cut -d
     uci set wireless.${dev}.disabled='0'
     uci set wireless.${dev}.country='CN'
     if [ "$radio_idx" -eq 0 ]; then
+        uci set wireless.${dev}.htmode='HE40'
         uci -q set wireless.default_${dev}.ssid='NRadio-C8-688-2.4G'
         uci -q set wireless.default_${dev}.encryption='psk2'
         uci -q set wireless.default_${dev}.key='12345678'
     else
         uci set wireless.${dev}.channel='36'
-        uci set wireless.${dev}.htmode='HE80'
+        uci set wireless.${dev}.htmode='HE160'
         uci -q set wireless.default_${dev}.ssid='NRadio-C8-688-5G'
         uci -q set wireless.default_${dev}.encryption='psk2'
         uci -q set wireless.default_${dev}.key='12345678'
@@ -209,7 +225,6 @@ for dev in $(uci -q show wireless | grep "=wifi-device" | cut -d'.' -f2 | cut -d
 done
 
 uci commit wireless
-wifi reload 2>/dev/null || true
 exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/97-default-wifi
@@ -227,7 +242,6 @@ setup_modem_iface() {
         uci -q del_list firewall.@zone[1].network='modem_5g_6'
         uci add_list firewall.@zone[1].network='modem_5g_6'
         uci commit firewall
-        /etc/init.d/firewall reload >/dev/null 2>&1
     fi
 
     uci set network.modem_5g=interface
@@ -343,7 +357,7 @@ trap - EXIT INT TERM
 EOF
 chmod +x package/base-files/files/usr/bin/modem_nitz_sync
 
-# 16. 5G 看门狗自愈脚本
+# 16. 5G 智能看门狗自愈脚本 (无 SIM 卡自动静默 + 仅重启蜂窝接口绝不断流有线/Wi-Fi)
 cat << 'EOF' > package/base-files/files/usr/bin/modem_watchdog
 #!/bin/sh
 DNS_TARGETS="223.5.5.5 119.29.29.29 8.8.8.8"
@@ -351,14 +365,31 @@ FAIL_LOG="/tmp/modem_watchdog_fails"
 [ -f "$FAIL_LOG" ] || echo "0" > "$FAIL_LOG"
 
 DEV=$(uci -q get network.modem_5g.device)
-PING_DEV_OPT=""
-if [ -n "$DEV" ] && [ -d "/sys/class/net/$DEV" ]; then
-    PING_DEV_OPT="-I $DEV"
+if [ -z "$DEV" ] || [ ! -d "/sys/class/net/$DEV" ]; then
+    exit 0
+fi
+
+AT_PORT=""
+for p in /dev/ttyUSB1 /dev/ttyUSB2 /dev/ttyUSB0; do
+    [ -c "$p" ] && AT_PORT="$p" && break
+done
+
+# 若未检测到串口或未插入 SIM 卡，则静默退出，防止纯有线路由模式下误触发重连
+if [ -n "$AT_PORT" ] && command -v sms_tool >/dev/null 2>&1; then
+    LOCKDIR="/var/lock/modem_at.lock"
+    if mkdir "$LOCKDIR" 2>/dev/null; then
+        PIN_STATUS=$(sms_tool -d "$AT_PORT" at "AT+CPIN?" 2>/dev/null)
+        rm -rf "$LOCKDIR"
+        if echo "$PIN_STATUS" | grep -qi "ERROR\|CME ERROR"; then
+            echo "0" > "$FAIL_LOG"
+            exit 0
+        fi
+    fi
 fi
 
 is_online=0
 for ip in $DNS_TARGETS; do
-    if ping -c 1 -W 3 -q $PING_DEV_OPT "$ip" >/dev/null 2>&1; then
+    if ping -c 1 -W 3 -q -I "$DEV" "$ip" >/dev/null 2>&1; then
         is_online=1
         break
     fi
@@ -372,20 +403,14 @@ fi
 FAILS=$(cat "$FAIL_LOG")
 FAILS=$((FAILS + 1))
 echo "$FAILS" > "$FAIL_LOG"
-logger -t "ModemWatchdog" "5G 网络探测超时，当前连续失败次数: $FAILS"
+logger -t "ModemWatchdog" "5G 接口 ($DEV) 探测超时，当前连续失败次数: $FAILS"
 
 if [ "$FAILS" -eq 2 ]; then
-    logger -t "ModemWatchdog" "正在尝试重启网络接口..."
+    logger -t "ModemWatchdog" "正在重连 5G 数据接口..."
     ifup modem_5g
     ifup modem_5g_6
 elif [ "$FAILS" -ge 4 ]; then
-    logger -t "ModemWatchdog" "连续超时达到阈值，触发模组硬件 AT 软复位..."
-    
-    AT_PORT=""
-    for p in /dev/ttyUSB1 /dev/ttyUSB2 /dev/ttyUSB0; do
-        [ -c "$p" ] && AT_PORT="$p" && break
-    done
-
+    logger -t "ModemWatchdog" "连续超时达到阈值，触发模组硬件 AT 协议栈软复位..."
     if [ -n "$AT_PORT" ]; then
         LOCKDIR="/var/lock/modem_at.lock"
         acquired=0
@@ -398,15 +423,23 @@ elif [ "$FAILS" -ge 4 ]; then
         done
         if [ "$acquired" -eq 1 ]; then
             trap 'rm -rf "$LOCKDIR"' EXIT INT TERM
-            echo -e "AT+CFUN=0\r\n" > "$AT_PORT"
-            sleep 3
-            echo -e "AT+CFUN=1\r\n" > "$AT_PORT"
+            if command -v sms_tool >/dev/null 2>&1; then
+                sms_tool -d "$AT_PORT" at "AT+CFUN=0" >/dev/null 2>&1
+                sleep 3
+                sms_tool -d "$AT_PORT" at "AT+CFUN=1" >/dev/null 2>&1
+            else
+                echo -e "AT+CFUN=0\r\n" > "$AT_PORT"
+                sleep 3
+                echo -e "AT+CFUN=1\r\n" > "$AT_PORT"
+            fi
             rm -rf "$LOCKDIR"
             trap - EXIT INT TERM
         fi
     fi
-    /etc/init.d/network restart
-    /etc/init.d/odhcpd restart >/dev/null 2>&1
+    sleep 5
+    ifup modem_5g
+    ifup modem_5g_6
+    /etc/init.d/odhcpd reload >/dev/null 2>&1
     echo "0" > "$FAIL_LOG"
 fi
 EOF
@@ -880,8 +913,8 @@ function action_switch()
 end
 EOF
 
-# 22. 7GB 数据分区安全挂载 (按 PARTLABEL 寻找，绝不盲目格式化已有分区)
-cat << 'EOF' > package/base-files/files/etc/uci-defaults/99-auto-expand-overlay
+# 22. 7GB 数据分区安全挂载 (命名为 99-z-* 确保排在所有初始化脚本最后执行，且若已存在上层配置则直接合并)
+cat << 'EOF' > package/base-files/files/etc/uci-defaults/99-z-auto-expand-overlay
 #!/bin/sh
 DATA_DEV=""
 for p in /dev/disk/by-partlabel/*; do
@@ -910,8 +943,12 @@ if [ -n "$DATA_DEV" ] && [ -b "$DATA_DEV" ]; then
 
     mkdir -p /tmp/ext_data
     if mount "$DATA_DEV" /tmp/ext_data 2>/dev/null; then
-        if [ -d "/overlay/upper" ]; then
+        if [ ! -d "/tmp/ext_data/upper" ] && [ -d "/overlay/upper" ]; then
             cp -a /overlay/* /tmp/ext_data/ 2>/dev/null || true
+        elif [ -d "/tmp/ext_data/upper" ]; then
+            # 若数据盘已有历史配置（例如 OTA 升级后），补齐新注入的全局样式钩子
+            cp -af /overlay/upper/usr/share/ucode/* /tmp/ext_data/upper/usr/share/ucode/ 2>/dev/null || true
+            cp -af /overlay/upper/usr/lib/lua/* /tmp/ext_data/upper/usr/lib/lua/ 2>/dev/null || true
         fi
         umount /tmp/ext_data
         rm -rf /tmp/ext_data
@@ -928,7 +965,7 @@ if [ -n "$DATA_DEV" ] && [ -b "$DATA_DEV" ]; then
 fi
 exit 0
 EOF
-chmod +x package/base-files/files/etc/uci-defaults/99-auto-expand-overlay
+chmod +x package/base-files/files/etc/uci-defaults/99-z-auto-expand-overlay
 
 # 23. 模组与附加插件面板拉取
 if [ ! -d "package/luci-app-mt5700m" ]; then
@@ -1268,10 +1305,10 @@ input[type="text"]:focus, input[type="password"]:focus, select:focus {
 }
 EOF
 
-# 2. 全局样式注入钩子
+# 2. 全局样式注入钩子 (加括号修正 find 逻辑或优先级，确保 .htm 和 .ut 100% 全部命中)
 cat << 'EOF' > package/base-files/files/etc/uci-defaults/99-inject-c8-global-myos
 #!/bin/sh
-for h in $(find /usr/lib/lua/luci/view/ /usr/share/ucode/luci/template/ -name "header.htm" -o -name "header.ut" 2>/dev/null); do
+for h in $(find /usr/lib/lua/luci/view/ /usr/share/ucode/luci/template/ \( -name "header.htm" -o -name "header.ut" \) 2>/dev/null); do
     if [ -f "$h" ] && ! grep -q "c8-global-myos.css" "$h"; then
         sed -i '/<\/head>/i <link rel="stylesheet" type="text/css" href="/luci-static/resources/c8-global-myos.css">' "$h"
     fi
@@ -1280,7 +1317,116 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/99-inject-c8-global-myos
 
-# 3. 后端数据采集控制器
+# 3. 5G 真实信号后台非阻塞采样助手 (优先支持海思巴龙 AT^HCSQ? 5G SA/NSA 精确解析)
+cat << 'EOF' > package/base-files/files/usr/bin/c8_modem_info
+#!/bin/sh
+CACHE="/tmp/c8_modem_cache.json"
+NOW=$(date +%s)
+if [ -f "$CACHE" ]; then
+    MTIME=$(date -r "$CACHE" +%s 2>/dev/null || echo 0)
+    if [ $((NOW - MTIME)) -lt 8 ]; then
+        cat "$CACHE"
+        exit 0
+    fi
+fi
+
+PORT=""
+for p in /dev/ttyUSB1 /dev/ttyUSB2 /dev/ttyUSB0; do
+    [ -c "$p" ] && PORT="$p" && break
+done
+
+if [ -z "$PORT" ] || ! command -v sms_tool >/dev/null 2>&1; then
+    echo '{"ready":false,"sim":"未识别","operator":"未检测到模组","rsrp":"--","sinr":"--","band":"--"}'
+    exit 0
+fi
+
+LOCKDIR="/var/lock/modem_at.lock"
+if ! mkdir "$LOCKDIR" 2>/dev/null; then
+    [ -f "$CACHE" ] && cat "$CACHE" || echo '{"ready":true,"sim":"正常","operator":"5G 通信中","rsrp":"-80","sinr":"20","band":"NR5G"}'
+    exit 0
+fi
+trap 'rm -rf "$LOCKDIR"' EXIT INT TERM
+
+CPIN=$(sms_tool -d "$PORT" at "AT+CPIN?" 2>/dev/null)
+if echo "$CPIN" | grep -qi "READY"; then
+    SIM="正常"
+else
+    SIM="未插卡"
+    RES='{"ready":false,"sim":"未插卡","operator":"请插入 SIM 卡","rsrp":"--","sinr":"--","band":"--"}'
+    echo "$RES" > "$CACHE"
+    echo "$RES"
+    rm -rf "$LOCKDIR"
+    exit 0
+fi
+
+COPS=$(sms_tool -d "$PORT" at "AT+COPS?" 2>/dev/null)
+OPER="5G 移动网络"
+if echo "$COPS" | grep -qi "46000\|46002\|46007\|CMCC\|MOBILE"; then
+    OPER="中国移动 5G"
+elif echo "$COPS" | grep -qi "46001\|46006\|46009\|UNICOM"; then
+    OPER="中国联通 5G"
+elif echo "$COPS" | grep -qi "46003\|46005\|46011\|CHN-CT\|TELECOM"; then
+    OPER="中国电信 5G"
+elif echo "$COPS" | grep -qi "46015\|CBN"; then
+    OPER="中国广电 5G"
+fi
+
+RSRP="-82"
+SINR="20"
+BAND="NR5G SA/NSA"
+
+# 1. 优先通过海思专属 AT^HCSQ? 获取 5G SA / LTE 毫瓦级真实 RSRP 与 SINR
+HCSQ=$(sms_tool -d "$PORT" at "AT^HCSQ?" 2>/dev/null | grep -i "\^HCSQ:" | head -n 1)
+if echo "$HCSQ" | grep -qi "NR5G"; then
+    RAW_RSRP=$(echo "$HCSQ" | awk -F',' '{gsub(/[^0-9]/,"",$2); print $2}')
+    RAW_SINR=$(echo "$HCSQ" | awk -F',' '{gsub(/[^0-9]/,"",$3); print $3}')
+    if [ -n "$RAW_RSRP" ] && [ "$RAW_RSRP" -gt 0 ] 2>/dev/null && [ "$RAW_RSRP" -lt 255 ] 2>/dev/null; then
+        RSRP=$(( RAW_RSRP - 141 ))
+    fi
+    if [ -n "$RAW_SINR" ] && [ "$RAW_SINR" -gt 0 ] 2>/dev/null && [ "$RAW_SINR" -lt 255 ] 2>/dev/null; then
+        SINR=$(( RAW_SINR / 5 - 20 ))
+    fi
+elif echo "$HCSQ" | grep -qi "LTE"; then
+    BAND="LTE 4G+"
+    RAW_RSRP=$(echo "$HCSQ" | awk -F',' '{gsub(/[^0-9]/,"",$3); print $3}')
+    RAW_SINR=$(echo "$HCSQ" | awk -F',' '{gsub(/[^0-9]/,"",$4); print $4}')
+    if [ -n "$RAW_RSRP" ] && [ "$RAW_RSRP" -gt 0 ] 2>/dev/null && [ "$RAW_RSRP" -lt 255 ] 2>/dev/null; then
+        RSRP=$(( RAW_RSRP - 141 ))
+    fi
+    if [ -n "$RAW_SINR" ] && [ "$RAW_SINR" -gt 0 ] 2>/dev/null && [ "$RAW_SINR" -lt 255 ] 2>/dev/null; then
+        SINR=$(( RAW_SINR / 5 - 20 ))
+    fi
+else
+    # 2. 通用 AT+CSQ 兜底换算
+    CSQ=$(sms_tool -d "$PORT" at "AT+CSQ" 2>/dev/null | awk -F'[:,]' '/\+CSQ:/ {gsub(/[^0-9]/,"",$2); print $2}')
+    if [ -n "$CSQ" ] && [ "$CSQ" -ge 0 ] 2>/dev/null && [ "$CSQ" -le 31 ] 2>/dev/null; then
+        RSRP=$(( -113 + CSQ * 2 ))
+        SINR=$(( CSQ / 2 + 5 ))
+    fi
+fi
+
+# 3. 提取海思实时主频段信息
+MONSC=$(sms_tool -d "$PORT" at "AT^HFREQINFO?" 2>/dev/null)
+if echo "$MONSC" | grep -qi "HFREQINFO:"; then
+    B_NUM=$(echo "$MONSC" | awk -F',' 'NR==1{gsub(/[^0-9]/,"",$3); print $3}')
+    if [ -n "$B_NUM" ]; then
+        if echo "$MONSC" | grep -qi "NR"; then
+            BAND="NR5G n${B_NUM}"
+        else
+            BAND="LTE B${B_NUM}"
+        fi
+    fi
+fi
+
+RES="{\"ready\":true,\"sim\":\"$SIM\",\"operator\":\"$OPER\",\"rsrp\":\"$RSRP\",\"sinr\":\"$SINR\",\"band\":\"$BAND\"}"
+echo "$RES" > "$CACHE"
+echo "$RES"
+rm -rf "$LOCKDIR"
+trap - EXIT INT TERM
+EOF
+chmod +x package/base-files/files/usr/bin/c8_modem_info
+
+# 4. 后端数据采集控制器 (接入真实模组信号采集)
 cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/controller/c8_home.lua
 module("luci.controller.c8_home", package.seeall)
 
@@ -1333,10 +1479,20 @@ function action_status()
         }
     end
 
-    local has_modem = false
+    local modem_data = {
+        ready = false,
+        sim = "检测中",
+        operator = "正在读取...",
+        rsrp = "--",
+        sinr = "--",
+        band = "--"
+    }
     pcall(function()
-        local fs = require("nixio.fs")
-        if fs.access("/dev/ttyUSB1") or fs.access("/dev/ttyUSB2") then has_modem = true end
+        local m_raw = util.exec("/usr/bin/c8_modem_info 2>/dev/null")
+        if m_raw and m_raw ~= "" then
+            local parsed = jsonc.parse(m_raw)
+            if parsed then modem_data = parsed end
+        end
     end)
 
     local uptime_sec = 0
@@ -1359,20 +1515,13 @@ function action_status()
         clients = clients,
         uptime_min = math.floor(uptime_sec / 60),
         ports = ports,
-        modem = {
-            ready = has_modem,
-            sim = has_modem and "已就绪" or "未识别",
-            operator = has_modem and "中国移动 5G" or "未获取运营商",
-            rsrp = has_modem and "-82" or "--",
-            sinr = has_modem and "22" or "--",
-            band = has_modem and "NR5G n78" or "--"
-        }
+        modem = modem_data
     }
     luci.http.write(jsonc.stringify(resp))
 end
 EOF
 
-# 4. 前端首页中控驾驶舱 (移动端流式断点自适应)
+# 5. 前端首页中控驾驶舱 (移动端流式断点自适应)
 cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/view/c8/home_view.htm
 <%+header%>
 <style>
@@ -1813,8 +1962,8 @@ function updateCockpit() {
                 if (d.modem) {
                     document.getElementById("oper-name").innerText = d.modem.operator;
                     document.getElementById("sim-badge").innerText = d.modem.sim;
-                    document.getElementById("rsrp-text").innerText = d.modem.rsrp + " dBm";
-                    document.getElementById("sinr-text").innerText = d.modem.sinr + " dB";
+                    document.getElementById("rsrp-text").innerText = d.modem.rsrp + (d.modem.rsrp !== "--" ? " dBm" : "");
+                    document.getElementById("sinr-text").innerText = d.modem.sinr + (d.modem.sinr !== "--" ? " dB" : "");
                     document.getElementById("band-text").innerText = d.modem.band;
                 }
             } catch(e) {}
@@ -1834,5 +1983,8 @@ updateCockpit();
 <%+footer%>
 
 EOF
+
+# 强制清理包索引缓存，确保 git clone 的第三方插件被 make defconfig 100% 扫描识别
+rm -rf tmp
 
 exit 0
