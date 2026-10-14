@@ -153,11 +153,12 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/93-firewall-turbo
 
-# 9. 防火墙出站 TTL 锁定 (全适配 eth2/wwan/usb/modem 接口)
+# 9. 防火墙出站 TTL 锁定 (在 forward 早期与 postrouting 双重锁定，兼容 Flowtable 加速)
 cat << 'EOF' > package/base-files/files/etc/nftables.d/10-custom-ttl.nft
 chain forward_mss_clamp {
-    type filter hook forward priority 0; policy accept;
+    type filter hook forward priority -160; policy accept;
     tcp flags syn tcp option maxseg size set rt mtu
+    oifname { "wwan*", "usb*", "modem_*", "eth2" } ip ttl set 64
 }
 chain postrouting_mangle_ttl {
     type filter hook postrouting priority 300; policy accept;
@@ -1317,112 +1318,119 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/99-inject-c8-global-myos
 
-# 3. 5G 真实信号后台非阻塞采样助手 (优先支持海思巴龙 AT^HCSQ? 5G SA/NSA 精确解析)
+# 3. 5G 真实信号后台非阻塞采样助手 (优先支持海思巴龙 AT^HCSQ? + 异步刷新零卡顿)
 cat << 'EOF' > package/base-files/files/usr/bin/c8_modem_info
 #!/bin/sh
 CACHE="/tmp/c8_modem_cache.json"
-NOW=$(date +%s)
-if [ -f "$CACHE" ]; then
-    MTIME=$(date -r "$CACHE" +%s 2>/dev/null || echo 0)
-    if [ $((NOW - MTIME)) -lt 8 ]; then
-        cat "$CACHE"
-        exit 0
+DEFAULT_JSON='{"ready":false,"sim":"检测中","operator":"正在读取模组...","rsrp":"--","sinr":"--","band":"--"}'
+
+update_modem_cache() {
+    PORT=""
+    for p in /dev/ttyUSB1 /dev/ttyUSB2 /dev/ttyUSB0; do
+        [ -c "$p" ] && PORT="$p" && break
+    done
+
+    if [ -z "$PORT" ] || ! command -v sms_tool >/dev/null 2>&1; then
+        echo '{"ready":false,"sim":"未识别","operator":"未检测到模组","rsrp":"--","sinr":"--","band":"--"}' > "${CACHE}.tmp"
+        mv -f "${CACHE}.tmp" "$CACHE"
+        return
     fi
-fi
 
-PORT=""
-for p in /dev/ttyUSB1 /dev/ttyUSB2 /dev/ttyUSB0; do
-    [ -c "$p" ] && PORT="$p" && break
-done
+    LOCKDIR="/var/lock/modem_at.lock"
+    mkdir "$LOCKDIR" 2>/dev/null || return
+    trap 'rm -rf "$LOCKDIR"' EXIT INT TERM
 
-if [ -z "$PORT" ] || ! command -v sms_tool >/dev/null 2>&1; then
-    echo '{"ready":false,"sim":"未识别","operator":"未检测到模组","rsrp":"--","sinr":"--","band":"--"}'
-    exit 0
-fi
-
-LOCKDIR="/var/lock/modem_at.lock"
-if ! mkdir "$LOCKDIR" 2>/dev/null; then
-    [ -f "$CACHE" ] && cat "$CACHE" || echo '{"ready":true,"sim":"正常","operator":"5G 通信中","rsrp":"-80","sinr":"20","band":"NR5G"}'
-    exit 0
-fi
-trap 'rm -rf "$LOCKDIR"' EXIT INT TERM
-
-CPIN=$(sms_tool -d "$PORT" at "AT+CPIN?" 2>/dev/null)
-if echo "$CPIN" | grep -qi "READY"; then
-    SIM="正常"
-else
-    SIM="未插卡"
-    RES='{"ready":false,"sim":"未插卡","operator":"请插入 SIM 卡","rsrp":"--","sinr":"--","band":"--"}'
-    echo "$RES" > "$CACHE"
-    echo "$RES"
-    rm -rf "$LOCKDIR"
-    exit 0
-fi
-
-COPS=$(sms_tool -d "$PORT" at "AT+COPS?" 2>/dev/null)
-OPER="5G 移动网络"
-if echo "$COPS" | grep -qi "46000\|46002\|46007\|CMCC\|MOBILE"; then
-    OPER="中国移动 5G"
-elif echo "$COPS" | grep -qi "46001\|46006\|46009\|UNICOM"; then
-    OPER="中国联通 5G"
-elif echo "$COPS" | grep -qi "46003\|46005\|46011\|CHN-CT\|TELECOM"; then
-    OPER="中国电信 5G"
-elif echo "$COPS" | grep -qi "46015\|CBN"; then
-    OPER="中国广电 5G"
-fi
-
-RSRP="-82"
-SINR="20"
-BAND="NR5G SA/NSA"
-
-# 1. 优先通过海思专属 AT^HCSQ? 获取 5G SA / LTE 毫瓦级真实 RSRP 与 SINR
-HCSQ=$(sms_tool -d "$PORT" at "AT^HCSQ?" 2>/dev/null | grep -i "\^HCSQ:" | head -n 1)
-if echo "$HCSQ" | grep -qi "NR5G"; then
-    RAW_RSRP=$(echo "$HCSQ" | awk -F',' '{gsub(/[^0-9]/,"",$2); print $2}')
-    RAW_SINR=$(echo "$HCSQ" | awk -F',' '{gsub(/[^0-9]/,"",$3); print $3}')
-    if [ -n "$RAW_RSRP" ] && [ "$RAW_RSRP" -gt 0 ] 2>/dev/null && [ "$RAW_RSRP" -lt 255 ] 2>/dev/null; then
-        RSRP=$(( RAW_RSRP - 141 ))
+    CPIN=$(sms_tool -d "$PORT" at "AT+CPIN?" 2>/dev/null)
+    if echo "$CPIN" | grep -qi "READY"; then
+        SIM="正常"
+    else
+        RES='{"ready":false,"sim":"未插卡","operator":"请插入 SIM 卡","rsrp":"--","sinr":"--","band":"--"}'
+        echo "$RES" > "${CACHE}.tmp"
+        mv -f "${CACHE}.tmp" "$CACHE"
+        rm -rf "$LOCKDIR"
+        trap - EXIT INT TERM
+        return
     fi
-    if [ -n "$RAW_SINR" ] && [ "$RAW_SINR" -gt 0 ] 2>/dev/null && [ "$RAW_SINR" -lt 255 ] 2>/dev/null; then
-        SINR=$(( RAW_SINR / 5 - 20 ))
-    fi
-elif echo "$HCSQ" | grep -qi "LTE"; then
-    BAND="LTE 4G+"
-    RAW_RSRP=$(echo "$HCSQ" | awk -F',' '{gsub(/[^0-9]/,"",$3); print $3}')
-    RAW_SINR=$(echo "$HCSQ" | awk -F',' '{gsub(/[^0-9]/,"",$4); print $4}')
-    if [ -n "$RAW_RSRP" ] && [ "$RAW_RSRP" -gt 0 ] 2>/dev/null && [ "$RAW_RSRP" -lt 255 ] 2>/dev/null; then
-        RSRP=$(( RAW_RSRP - 141 ))
-    fi
-    if [ -n "$RAW_SINR" ] && [ "$RAW_SINR" -gt 0 ] 2>/dev/null && [ "$RAW_SINR" -lt 255 ] 2>/dev/null; then
-        SINR=$(( RAW_SINR / 5 - 20 ))
-    fi
-else
-    # 2. 通用 AT+CSQ 兜底换算
-    CSQ=$(sms_tool -d "$PORT" at "AT+CSQ" 2>/dev/null | awk -F'[:,]' '/\+CSQ:/ {gsub(/[^0-9]/,"",$2); print $2}')
-    if [ -n "$CSQ" ] && [ "$CSQ" -ge 0 ] 2>/dev/null && [ "$CSQ" -le 31 ] 2>/dev/null; then
-        RSRP=$(( -113 + CSQ * 2 ))
-        SINR=$(( CSQ / 2 + 5 ))
-    fi
-fi
 
-# 3. 提取海思实时主频段信息
-MONSC=$(sms_tool -d "$PORT" at "AT^HFREQINFO?" 2>/dev/null)
-if echo "$MONSC" | grep -qi "HFREQINFO:"; then
-    B_NUM=$(echo "$MONSC" | awk -F',' 'NR==1{gsub(/[^0-9]/,"",$3); print $3}')
-    if [ -n "$B_NUM" ]; then
-        if echo "$MONSC" | grep -qi "NR"; then
-            BAND="NR5G n${B_NUM}"
-        else
-            BAND="LTE B${B_NUM}"
+    COPS=$(sms_tool -d "$PORT" at "AT+COPS?" 2>/dev/null)
+    OPER="5G 移动网络"
+    if echo "$COPS" | grep -qi "46000\|46002\|46007\|CMCC\|MOBILE"; then
+        OPER="中国移动 5G"
+    elif echo "$COPS" | grep -qi "46001\|46006\|46009\|UNICOM"; then
+        OPER="中国联通 5G"
+    elif echo "$COPS" | grep -qi "46003\|46005\|46011\|CHN-CT\|TELECOM"; then
+        OPER="中国电信 5G"
+    elif echo "$COPS" | grep -qi "46015\|CBN"; then
+        OPER="中国广电 5G"
+    fi
+
+    RSRP="-82"
+    SINR="20"
+    BAND="NR5G SA/NSA"
+
+    HCSQ=$(sms_tool -d "$PORT" at "AT^HCSQ?" 2>/dev/null | grep -i "HCSQ:" | head -n 1)
+    if echo "$HCSQ" | grep -qi "NR5G"; then
+        RAW_RSRP=$(echo "$HCSQ" | awk -F',' '{gsub(/[^0-9]/,"",$2); print $2}')
+        RAW_SINR=$(echo "$HCSQ" | awk -F',' '{gsub(/[^0-9]/,"",$3); print $3}')
+        if [ -n "$RAW_RSRP" ] && [ "$RAW_RSRP" -gt 0 ] 2>/dev/null && [ "$RAW_RSRP" -lt 255 ] 2>/dev/null; then
+            RSRP=$(( RAW_RSRP - 141 ))
+        fi
+        if [ -n "$RAW_SINR" ] && [ "$RAW_SINR" -gt 0 ] 2>/dev/null && [ "$RAW_SINR" -lt 255 ] 2>/dev/null; then
+            SINR=$(( RAW_SINR / 5 - 20 ))
+        fi
+    elif echo "$HCSQ" | grep -qi "LTE"; then
+        BAND="LTE 4G+"
+        RAW_RSRP=$(echo "$HCSQ" | awk -F',' '{gsub(/[^0-9]/,"",$3); print $3}')
+        RAW_SINR=$(echo "$HCSQ" | awk -F',' '{gsub(/[^0-9]/,"",$4); print $4}')
+        if [ -n "$RAW_RSRP" ] && [ "$RAW_RSRP" -gt 0 ] 2>/dev/null && [ "$RAW_RSRP" -lt 255 ] 2>/dev/null; then
+            RSRP=$(( RAW_RSRP - 141 ))
+        fi
+        if [ -n "$RAW_SINR" ] && [ "$RAW_SINR" -gt 0 ] 2>/dev/null && [ "$RAW_SINR" -lt 255 ] 2>/dev/null; then
+            SINR=$(( RAW_SINR / 5 - 20 ))
+        fi
+    else
+        CSQ=$(sms_tool -d "$PORT" at "AT+CSQ" 2>/dev/null | awk -F'[:,]' '/\+CSQ:/ {gsub(/[^0-9]/,"",$2); print $2}')
+        if [ -n "$CSQ" ] && [ "$CSQ" -ge 0 ] 2>/dev/null && [ "$CSQ" -le 31 ] 2>/dev/null; then
+            RSRP=$(( -113 + CSQ * 2 ))
+            SINR=$(( CSQ / 2 + 5 ))
         fi
     fi
-fi
 
-RES="{\"ready\":true,\"sim\":\"$SIM\",\"operator\":\"$OPER\",\"rsrp\":\"$RSRP\",\"sinr\":\"$SINR\",\"band\":\"$BAND\"}"
-echo "$RES" > "$CACHE"
-echo "$RES"
-rm -rf "$LOCKDIR"
-trap - EXIT INT TERM
+    # 精准过滤 HFREQINFO 数据行：第2字段 sysmode=7 为 5G NR，6 为 LTE；第3字段为频段号
+    HFREQ=$(sms_tool -d "$PORT" at "AT^HFREQINFO?" 2>/dev/null | grep -i "HFREQINFO:" | head -n 1)
+    if [ -n "$HFREQ" ]; then
+        SYSMODE=$(echo "$HFREQ" | awk -F',' '{gsub(/[^0-9]/,"",$2); print $2}')
+        B_NUM=$(echo "$HFREQ" | awk -F',' '{gsub(/[^0-9]/,"",$3); print $3}')
+        if [ -n "$B_NUM" ]; then
+            if [ "$SYSMODE" = "7" ]; then
+                BAND="NR5G n${B_NUM}"
+            elif [ "$SYSMODE" = "6" ]; then
+                BAND="LTE B${B_NUM}"
+            else
+                BAND="NR5G n${B_NUM}"
+            fi
+        fi
+    fi
+
+    RES="{\"ready\":true,\"sim\":\"$SIM\",\"operator\":\"$OPER\",\"rsrp\":\"$RSRP\",\"sinr\":\"$SINR\",\"band\":\"$BAND\"}"
+    echo "$RES" > "${CACHE}.tmp"
+    mv -f "${CACHE}.tmp" "$CACHE"
+    rm -rf "$LOCKDIR"
+    trap - EXIT INT TERM
+}
+
+# 立即输出缓存（确保 Web 接口 5ms 内瞬时响应，绝不触发 3000ms 超时）
+if [ -f "$CACHE" ]; then
+    cat "$CACHE"
+    NOW=$(date +%s)
+    MTIME=$(date -r "$CACHE" +%s 2>/dev/null || stat -c %Y "$CACHE" 2>/dev/null || echo 0)
+    if [ $((NOW - MTIME)) -ge 8 ]; then
+        update_modem_cache >/dev/null 2>&1 &
+    fi
+else
+    echo "$DEFAULT_JSON"
+    update_modem_cache >/dev/null 2>&1 &
+fi
 EOF
 chmod +x package/base-files/files/usr/bin/c8_modem_info
 
