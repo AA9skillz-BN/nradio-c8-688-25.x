@@ -1553,22 +1553,27 @@ function action_status()
         end
     end)
 
+    -- 精准提取总内存 ($2) 与已用内存 ($3)，防止分子分母反转
     local mem_used, mem_total, mem_pct = 150, 986, 15
     pcall(function()
-        local mem_raw = util.exec("free -m | grep Mem") or ""
-        local u, tot = mem_raw:match("(%d+)%s+(%d+)")
-        if u and tot then
-            mem_used = tonumber(u) or 150
+        local mem_raw = util.exec("free -m | awk '/^Mem:/ {print $2, $3}'") or ""
+        local tot, u = mem_raw:match("(%d+)%s+(%d+)")
+        if tot and u then
             mem_total = tonumber(tot) or 986
-            mem_pct = math.floor((mem_used / mem_total) * 100)
+            mem_used = tonumber(u) or 150
+            if mem_total > 0 then
+                mem_pct = math.floor((mem_used / mem_total) * 100)
+            end
         end
     end)
 
+    -- 精准提取 /overlay 第 4 列可用空间 (MB)，避开 mmcblk0p10 分区名末尾数字干扰
     local emmc_avail_gb = "6.9"
     pcall(function()
-        local emmc_raw = util.exec("df -m /overlay 2>/dev/null | tail -n 1") or ""
-        local _, _, a = emmc_raw:match("(%d+)%s+(%d+)%s+(%d+)")
-        if a then emmc_avail_gb = string.format("%.1f", tonumber(a) / 1024) end
+        local avail_mb = util.exec("df -m /overlay 2>/dev/null | awk 'NR==2 {print $4}'"):match("(%d+)")
+        if avail_mb then
+            emmc_avail_gb = string.format("%.1f", tonumber(avail_mb) / 1024)
+        end
     end)
 
     local ports = {}
