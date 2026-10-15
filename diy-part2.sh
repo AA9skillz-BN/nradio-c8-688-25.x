@@ -968,9 +968,10 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/99-z-auto-expand-overlay
 
-# 23. 模组与附加插件面板拉取
-if [ ! -d "package/luci-app-mt5700m" ]; then
-    git clone --depth=1 https://github.com/FAN789/luci-app-mt5700m.git package/luci-app-mt5700m 2>/dev/null || true
+# 23. 模组与附加插件面板拉取 (采用最新 LianXia233/luci-app-mt5700 Rust 全功能融合套件)
+rm -rf package/luci-app-mt5700m package/at-webserver package/mt5700webui
+if [ ! -d "package/luci-app-mt5700" ]; then
+    git clone --depth=1 https://github.com/LianXia233/luci-app-mt5700.git package/luci-app-mt5700
 fi
 
 if [ ! -d "package/luci-app-h5000m-fancontrol" ]; then
@@ -987,25 +988,52 @@ if [ ! -d "package/luci-app-3ginfo-lite" ]; then
     git clone --depth=1 https://github.com/4IceG/luci-app-3ginfo-lite.git package/luci-app-3ginfo-lite 2>/dev/null || true
 fi
 
-if [ ! -d "package/at-webserver" ]; then
-    git clone --depth=1 https://github.com/kossev-bg/at-webserver.git package/at-webserver 2>/dev/null || true
-fi
-
-# 24. 模组与短信插件默认通信串口智能配置 (自适应探测可用串口)
+# 24. MT5700M 串口驱动强制绑定 + Rust 后端服务与短信插件默认串口自动对齐
 cat << 'EOF' > package/base-files/files/etc/uci-defaults/99-cellular-addons-default
 #!/bin/sh
+# 1. 动态注册海思/鼎桥 MT5700M 常见 USB VID/PID 至 option 串口驱动，确保 100% 生成 /dev/ttyUSB*
+modprobe option 2>/dev/null || true
+if [ -w /sys/bus/usb-serial/drivers/option1/new_id ]; then
+    for vid_pid in "12d1 1506" "12d1 15c1" "12d1 14db" "3466 0101" "2c7c 0800" "2c7c 0801"; do
+        echo "$vid_pid" > /sys/bus/usb-serial/drivers/option1/new_id 2>/dev/null || true
+    done
+fi
+sleep 1
+
+# 2. 自动探测真实响应 AT 指令的通信串口
 DEF_PORT="/dev/ttyUSB1"
-for p in /dev/ttyUSB1 /dev/ttyUSB2 /dev/ttyUSB0; do
-    [ -c "$p" ] && DEF_PORT="$p" && break
+for p in /dev/ttyUSB1 /dev/ttyUSB2 /dev/ttyUSB0 /dev/ttyACM0; do
+    if [ -c "$p" ]; then
+        DEF_PORT="$p"
+        if command -v sms_tool >/dev/null 2>&1 && sms_tool -d "$p" at "AT" 2>/dev/null | grep -qi "OK"; then
+            break
+        fi
+    fi
 done
 
-if [ -f /etc/config/mt5700m ]; then
+# 3. 写入 luci-app-mt5700 内置的 at-webserver (Rust 后端) 与模组配置并启动服务
+if [ -f /etc/config/at-webserver ]; then
     uci -q batch << EOU
-set mt5700m.@mt5700m[0].port='$DEF_PORT'
-commit mt5700m
+set at-webserver.config.enabled='1'
+set at-webserver.config.at_port='$DEF_PORT'
+set at-webserver.config.device='$DEF_PORT'
+commit at-webserver
 EOU
+    /etc/init.d/at-webserver enable 2>/dev/null || true
+    /etc/init.d/at-webserver restart 2>/dev/null || true
 fi
 
+for cfg in mt5700 mt5700m; do
+    if [ -f "/etc/config/$cfg" ]; then
+        uci -q batch << EOU
+set $cfg.@$cfg[0].port='$DEF_PORT'
+set $cfg.@$cfg[0].device='$DEF_PORT'
+commit $cfg
+EOU
+    fi
+done
+
+# 4. 写入 sms-tool 与 3ginfo-lite 配置
 for cfg in sms_tool sms_tool_js; do
     if [ -f "/etc/config/$cfg" ]; then
         uci -q batch << EOU
