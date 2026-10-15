@@ -136,7 +136,7 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/02-hardware-power
 
-# 8. TCP BBR 拥塞控制 + 防火墙 Flowtable 流表加速与 FullCone NAT 默认开启
+# 8. TCP BBR 拥塞控制 + MTK PPE 硬件加速与 FullCone NAT 默认开启
 cat << 'EOF' >> package/base-files/files/etc/sysctl.conf
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
@@ -145,7 +145,7 @@ EOF
 cat << 'EOF' > package/base-files/files/etc/uci-defaults/93-firewall-turbo
 #!/bin/sh
 uci set firewall.@defaults[0].flow_offloading='1'
-uci set firewall.@defaults[0].flow_offloading_hw='0'
+uci set firewall.@defaults[0].flow_offloading_hw='1'
 uci set firewall.@defaults[0].fullcone='1'
 uci set firewall.@defaults[0].fullcone6='1'
 uci commit firewall
@@ -153,7 +153,7 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/93-firewall-turbo
 
-# 9. 防火墙出站 TTL 锁定 (在 forward 早期与 postrouting 双重锁定，兼容 Flowtable 加速)
+# 9. 防火墙出站 TTL 锁定 (在 forward 早期与 postrouting 双重锁定，全适配 eth2/wwan/usb/modem 接口)
 cat << 'EOF' > package/base-files/files/etc/nftables.d/10-custom-ttl.nft
 chain forward_mss_clamp {
     type filter hook forward priority -160; policy accept;
