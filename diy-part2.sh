@@ -114,21 +114,23 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/01-fw-env-detect
 
-# 7. 5G 模组与硬件外设电源主动使能双重保险 (拉低 GPIO 31 使能供电)
+# 7. 5G 模组与风扇硬件电源主动使能 (精准对接 DTS gpio-export 导出的 cpe-pwr 与 fan-hw)
 cat << 'EOF' > package/base-files/files/etc/uci-defaults/02-hardware-power
 #!/bin/sh
-if [ ! -d /sys/class/gpio/gpio31 ]; then
+# 使能 5G 模组电源 (GPIO 31, ACTIVE_LOW)
+if [ -d /sys/class/gpio/cpe-pwr ]; then
+    echo 0 > /sys/class/gpio/cpe-pwr/value 2>/dev/null || true
+else
     echo 31 > /sys/class/gpio/export 2>/dev/null || true
-fi
-if [ -d /sys/class/gpio/gpio31 ]; then
     echo out > /sys/class/gpio/gpio31/direction 2>/dev/null || true
     echo 0 > /sys/class/gpio/gpio31/value 2>/dev/null || true
 fi
 
-if [ ! -d /sys/class/gpio/gpio27 ]; then
+# 使能散热风扇硬件电源 (GPIO 27, ACTIVE_HIGH，修正 DTS 默认 <0> 导致的断电)
+if [ -d /sys/class/gpio/fan-hw ]; then
+    echo 1 > /sys/class/gpio/fan-hw/value 2>/dev/null || true
+else
     echo 27 > /sys/class/gpio/export 2>/dev/null || true
-fi
-if [ -d /sys/class/gpio/gpio27 ]; then
     echo out > /sys/class/gpio/gpio27/direction 2>/dev/null || true
     echo 1 > /sys/class/gpio/gpio27/value 2>/dev/null || true
 fi
