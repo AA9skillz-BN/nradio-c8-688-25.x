@@ -358,9 +358,24 @@ trap - EXIT INT TERM
 EOF
 chmod +x package/base-files/files/usr/bin/modem_nitz_sync
 
-# 16. 5G 智能看门狗自愈脚本 (无 SIM 卡自动静默 + 仅重启蜂窝接口绝不断流有线/Wi-Fi)
+# 16. 后台硬件温控守护 + 5G 智能看门狗自愈脚本 (无 SIM 卡自动静默 + 仅重启蜂窝接口)
 cat << 'EOF' > package/base-files/files/usr/bin/modem_watchdog
 #!/bin/sh
+# --- A. 24小时后台全天候硬件风扇温控调速 ---
+[ -w /sys/class/gpio/fan-hw/value ] && echo 1 > /sys/class/gpio/fan-hw/value 2>/dev/null || true
+RAW_TEMP=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null || echo 45000)
+TEMP_C=$(( RAW_TEMP / 1000 ))
+if [ "$TEMP_C" -ge 68 ]; then
+    echo 3 > /sys/class/thermal/cooling_device0/cur_state 2>/dev/null || true
+elif [ "$TEMP_C" -ge 58 ]; then
+    echo 2 > /sys/class/thermal/cooling_device0/cur_state 2>/dev/null || true
+elif [ "$TEMP_C" -ge 48 ]; then
+    echo 1 > /sys/class/thermal/cooling_device0/cur_state 2>/dev/null || true
+else
+    echo 0 > /sys/class/thermal/cooling_device0/cur_state 2>/dev/null || true
+fi
+
+# --- B. 5G 蜂窝网络连通性看门狗 ---
 DNS_TARGETS="223.5.5.5 119.29.29.29 8.8.8.8"
 FAIL_LOG="/tmp/modem_watchdog_fails"
 [ -f "$FAIL_LOG" ] || echo "0" > "$FAIL_LOG"
@@ -586,7 +601,7 @@ sysupgrade "$TMP_IMG"
 EOF
 chmod +x package/base-files/files/usr/bin/c8_autoupdate
 
-# 20. LuCI OTA 控制器
+# 20. LuCI OTA 控制器 (带服务端真实 CSRF 令牌校验)
 cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/controller/c8_autoupdate.lua
 module("luci.controller.c8_autoupdate", package.seeall)
 
@@ -596,7 +611,8 @@ function index()
 end
 
 function action_index()
-    local token = luci.http.formvalue("token") or luci.sys.uniqueid(16)
+    local token = luci.sys.uniqueid(16)
+    luci.util.exec("echo -n '" .. token .. "' > /tmp/.c8_ota_token")
     local html = [[
         <style>
             #ota-reboot-overlay {
@@ -737,6 +753,14 @@ function action_index()
 end
 
 function action_run()
+    local req_token = luci.http.formvalue("token") or ""
+    local saved_token = luci.util.exec("cat /tmp/.c8_ota_token 2>/dev/null"):gsub("%s+", "")
+    if req_token == "" or req_token ~= saved_token then
+        luci.http.status(403, "Forbidden")
+        luci.http.write("[安全拦截] CSRF Token 校验失败，请刷新页面后重试。\n")
+        return
+    end
+
     local mode = luci.http.formvalue("mode") or "check"
     luci.http.prepare_content("text/plain; charset=utf-8")
     local cmd = (mode == "upgrade") and "/usr/bin/c8_autoupdate" or "/usr/bin/c8_autoupdate check"
@@ -752,7 +776,7 @@ function action_run()
 end
 EOF
 
-# 21. LuCI 双系统切换面板 (CSRF 加固 + 75秒探活重连)
+# 21. LuCI 双系统切换面板 (真实服务端 CSRF 校验 + 75秒探活重连)
 cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/controller/dualboot.lua
 module("luci.controller.dualboot", package.seeall)
 
@@ -762,7 +786,8 @@ function index()
 end
 
 function action_dualboot()
-    local token = luci.http.formvalue("token") or luci.sys.uniqueid(16)
+    local token = luci.sys.uniqueid(16)
+    luci.util.exec("echo -n '" .. token .. "' > /tmp/.c8_dualboot_token")
     local cur_boot = luci.util.exec("fw_printenv boot_part 2>/dev/null | awk -F'=' '{print $2}'")
     if not cur_boot or cur_boot:gsub("%s+", "") == "" then
         cur_boot = luci.util.exec("fw_printenv boot_system 2>/dev/null | awk -F'=' '{print $2}'")
@@ -896,6 +921,14 @@ end
 
 function action_switch()
     luci.http.prepare_content("text/plain; charset=utf-8")
+    local req_token = luci.http.formvalue("token") or ""
+    local saved_token = luci.util.exec("cat /tmp/.c8_dualboot_token 2>/dev/null"):gsub("%s+", "")
+    if req_token == "" or req_token ~= saved_token then
+        luci.http.status(403, "Forbidden")
+        luci.http.write("FAIL: CSRF Token Mismatch")
+        return
+    end
+
     local cur_boot = luci.util.exec("fw_printenv boot_part 2>/dev/null | awk -F'=' '{print $2}'")
     if not cur_boot or cur_boot:gsub("%s+", "") == "" then
         cur_boot = luci.util.exec("fw_printenv boot_system 2>/dev/null | awk -F'=' '{print $2}'")
@@ -947,7 +980,6 @@ if [ -n "$DATA_DEV" ] && [ -b "$DATA_DEV" ]; then
         if [ ! -d "/tmp/ext_data/upper" ] && [ -d "/overlay/upper" ]; then
             cp -a /overlay/* /tmp/ext_data/ 2>/dev/null || true
         elif [ -d "/tmp/ext_data/upper" ]; then
-            # 若数据盘已有历史配置（例如 OTA 升级后），补齐新注入的全局样式钩子
             cp -af /overlay/upper/usr/share/ucode/* /tmp/ext_data/upper/usr/share/ucode/ 2>/dev/null || true
             cp -af /overlay/upper/usr/lib/lua/* /tmp/ext_data/upper/usr/lib/lua/ 2>/dev/null || true
         fi
@@ -1278,13 +1310,11 @@ nav.side-nav li a[href*="logout"]::before  { content: "🚪"; font-size: 15px; }
 /* =============================================================================
    MYOS 精致进阶补丁：自定义滚动条 / 登录框高级质感 / 平滑开关
    ============================================================================= */
-/* 1. 微型优雅滚动条 */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.12); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--c8-gold); }
 
-/* 2. 原生 Checkbox 升级为现代平滑开关 */
 input[type="checkbox"] {
     -webkit-appearance: none;
     appearance: none;
@@ -1315,13 +1345,11 @@ input[type="checkbox"]:checked::after {
     transform: translateX(16px);
 }
 
-/* 3. 输入框聚焦金色柔和光晕 */
 input[type="text"]:focus, input[type="password"]:focus, select:focus {
     border-color: var(--c8-gold) !important;
     box-shadow: 0 0 0 3px rgba(194, 120, 3, 0.15) !important;
 }
 
-/* 4. 登录页面优雅融合 (Argon 登录适配) */
 .login-page .login-container {
     background: rgba(255, 255, 255, 0.92) !important;
     backdrop-filter: blur(20px) !important;
@@ -1346,7 +1374,7 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/99-inject-c8-global-myos
 
-# 3. 5G 真实信号后台非阻塞采样助手 (优先支持海思巴龙 AT^HCSQ? + 异步刷新零卡顿)
+# 3. 5G 真实信号后台非阻塞采样助手 (海思 AT^HCSQ? + 机身物理 5G/4G 指示灯联动 + 异步刷新零卡顿)
 cat << 'EOF' > package/base-files/files/usr/bin/c8_modem_info
 #!/bin/sh
 CACHE="/tmp/c8_modem_cache.json"
@@ -1359,6 +1387,8 @@ update_modem_cache() {
     done
 
     if [ -z "$PORT" ] || ! command -v sms_tool >/dev/null 2>&1; then
+        echo 0 > /sys/class/leds/blue:5g/brightness 2>/dev/null || true
+        echo 0 > /sys/class/leds/blue:4g/brightness 2>/dev/null || true
         echo '{"ready":false,"sim":"未识别","operator":"未检测到模组","rsrp":"--","sinr":"--","band":"--"}' > "${CACHE}.tmp"
         mv -f "${CACHE}.tmp" "$CACHE"
         return
@@ -1372,6 +1402,8 @@ update_modem_cache() {
     if echo "$CPIN" | grep -qi "READY"; then
         SIM="正常"
     else
+        echo 0 > /sys/class/leds/blue:5g/brightness 2>/dev/null || true
+        echo 0 > /sys/class/leds/blue:4g/brightness 2>/dev/null || true
         RES='{"ready":false,"sim":"未插卡","operator":"请插入 SIM 卡","rsrp":"--","sinr":"--","band":"--"}'
         echo "$RES" > "${CACHE}.tmp"
         mv -f "${CACHE}.tmp" "$CACHE"
@@ -1424,7 +1456,6 @@ update_modem_cache() {
         fi
     fi
 
-    # 精准过滤 HFREQINFO 数据行：第2字段 sysmode=7 为 5G NR，6 为 LTE；第3字段为频段号
     HFREQ=$(sms_tool -d "$PORT" at "AT^HFREQINFO?" 2>/dev/null | grep -i "HFREQINFO:" | head -n 1)
     if [ -n "$HFREQ" ]; then
         SYSMODE=$(echo "$HFREQ" | awk -F',' '{gsub(/[^0-9]/,"",$2); print $2}')
@@ -1440,6 +1471,15 @@ update_modem_cache() {
         fi
     fi
 
+    # 联动机身外壳物理 5G (GPIO 11) / 4G (GPIO 12) 蓝灯
+    if echo "$BAND" | grep -qi "NR5G"; then
+        echo 1 > /sys/class/leds/blue:5g/brightness 2>/dev/null || true
+        echo 0 > /sys/class/leds/blue:4g/brightness 2>/dev/null || true
+    elif echo "$BAND" | grep -qi "LTE"; then
+        echo 0 > /sys/class/leds/blue:5g/brightness 2>/dev/null || true
+        echo 1 > /sys/class/leds/blue:4g/brightness 2>/dev/null || true
+    fi
+
     RES="{\"ready\":true,\"sim\":\"$SIM\",\"operator\":\"$OPER\",\"rsrp\":\"$RSRP\",\"sinr\":\"$SINR\",\"band\":\"$BAND\"}"
     echo "$RES" > "${CACHE}.tmp"
     mv -f "${CACHE}.tmp" "$CACHE"
@@ -1447,7 +1487,6 @@ update_modem_cache() {
     trap - EXIT INT TERM
 }
 
-# 立即输出缓存（确保 Web 接口 5ms 内瞬时响应，绝不触发 3000ms 超时）
 if [ -f "$CACHE" ]; then
     cat "$CACHE"
     NOW=$(date +%s)
@@ -1462,7 +1501,7 @@ fi
 EOF
 chmod +x package/base-files/files/usr/bin/c8_modem_info
 
-# 4. 后端数据采集控制器 (接入真实模组信号采集)
+# 4. 后端数据采集控制器 (接入 CPU 真实温控自动调速 + 真实风扇转速 + 真实模组信号)
 cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/controller/c8_home.lua
 module("luci.controller.c8_home", package.seeall)
 
@@ -1481,10 +1520,35 @@ function action_status()
     local jsonc = require("luci.jsonc")
 
     local cpu_temp = "49.5"
+    local temp_num = 49.5
     pcall(function()
         local raw = util.exec("cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null") or ""
         local t = tonumber(raw:match("%d+"))
-        if t and t > 0 then cpu_temp = string.format("%.1f", t / 1000) end
+        if t and t > 0 then
+            temp_num = t / 1000
+            cpu_temp = string.format("%.1f", temp_num)
+        end
+    end)
+
+    -- 根据 CPU 实时温度自动调节硬件 PWM 风扇档位并读取真实转速
+    local fan_pct = "50% 静音"
+    pcall(function()
+        local target_state = 0
+        if temp_num >= 68 then target_state = 3
+        elseif temp_num >= 58 then target_state = 2
+        elseif temp_num >= 48 then target_state = 1
+        else target_state = 0 end
+
+        util.exec("echo 1 > /sys/class/gpio/fan-hw/value 2>/dev/null; echo " .. target_state .. " > /sys/class/thermal/cooling_device0/cur_state 2>/dev/null")
+
+        local pwm_raw = util.exec("cat /sys/class/hwmon/hwmon*/pwm1 2>/dev/null | head -n 1") or ""
+        local pwm_val = tonumber(pwm_raw:match("%d+"))
+        if pwm_val and pwm_val > 0 then
+            fan_pct = math.floor((pwm_val / 255) * 100) .. "% 转速"
+        else
+            local map = {[0]="50% 静音", [1]="65% 温控", [2]="80% 强劲", [3]="100% 满速"}
+            fan_pct = map[target_state] or "65% 温控"
+        end
     end)
 
     local mem_used, mem_total, mem_pct = 150, 986, 15
@@ -1543,7 +1607,7 @@ function action_status()
 
     local resp = {
         cpu_temp = cpu_temp,
-        fan_speed = "45%",
+        fan_speed = fan_pct,
         mem_used = mem_used,
         mem_total = mem_total,
         mem_pct = mem_pct,
@@ -1557,7 +1621,7 @@ function action_status()
 end
 EOF
 
-# 5. 前端首页中控驾驶舱 (移动端流式断点自适应)
+# 5. 前端首页中控驾驶舱 (真实菜单搜索框 + 真实网口协商速率 + 真实风扇转速 + 信号灯联动)
 cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/view/c8/home_view.htm
 <%+header%>
 <style>
@@ -1767,10 +1831,9 @@ cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/view/c8/home_view.htm
     transition: width 0.4s ease; 
 }
 
-/* ================== 手机端专项自适应媒体查询 ================== */
 @media (max-width: 900px) {
     .c8-grid {
-        grid-template-columns: 1fr; /* 平板/手机端单列垂直排列 */
+        grid-template-columns: 1fr;
     }
 }
 
@@ -1779,40 +1842,31 @@ cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/view/c8/home_view.htm
         padding: 0 10px;
         margin: 5px auto 25px auto;
     }
-    
     .card {
         padding: 16px;
         border-radius: 14px;
         margin-bottom: 14px;
     }
-
     .hero-card {
         min-height: auto;
     }
-
     .hero-top {
         flex-direction: column;
         gap: 10px;
     }
-
     .hero-heading {
         font-size: 20px;
     }
-
-    /* 手机端精简机身尺寸，防止纵向占满一屏 */
     .device-body {
         width: 80px;
         height: 140px;
         border-radius: 28px 28px 12px 12px;
         padding: 16px 0 12px 0;
     }
-
     .device-ripple {
         width: 190px;
         height: 190px;
     }
-
-    /* 手机端端口排列优化为 2x2 弹性网格 */
     .ports-shelf {
         display: grid;
         grid-template-columns: 1fr 1fr;
@@ -1821,20 +1875,17 @@ cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/view/c8/home_view.htm
         width: 100%;
         box-sizing: border-box;
     }
-
     .port-pill {
         justify-content: center;
         font-size: 11px;
         padding: 6px 8px;
     }
-
     .hero-footer {
         flex-direction: column;
         align-items: flex-start;
         gap: 8px;
         padding: 12px 14px;
     }
-
     .hero-footer > div:last-child {
         text-align: left !important;
     }
@@ -1854,15 +1905,15 @@ cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/view/c8/home_view.htm
                     </div>
                     <div style="display: flex; gap: 8px;">
                         <span class="badge-soft blue">⚡ Slot B</span>
-                        <span class="badge-soft green">5G 模组已就绪</span>
+                        <span class="badge-soft green" id="modem-top-badge">5G 模组已就绪</span>
                     </div>
                 </div>
 
                 <div class="device-center">
                     <div class="device-ripple"></div>
                     <div class="device-body">
-                        <div style="font-size: 10px; font-weight: 800; color: #9ca3af;">5G</div>
-                        <div style="display: flex; flex-direction: column; gap: 3px;">
+                        <div style="font-size: 10px; font-weight: 800; color: #9ca3af;" id="device-mode-label">5G</div>
+                        <div style="display: flex; flex-direction: column; gap: 3px;" id="device-led-dots">
                             <span style="width: 3px; height: 3px; background: #10b981; border-radius: 50%;"></span>
                             <span style="width: 3px; height: 3px; background: #10b981; border-radius: 50%;"></span>
                             <span style="width: 3px; height: 3px; background: #10b981; border-radius: 50%;"></span>
@@ -1946,7 +1997,7 @@ cat << 'EOF' > package/base-files/files/usr/lib/lua/luci/view/c8/home_view.htm
                     </div>
                     <div class="sub-panel">
                         <div style="font-size: 11px; color: var(--c8-muted);">温控散热风扇</div>
-                        <div style="font-size: 16px; font-weight: 700; color: #059669;">PWM 智能</div>
+                        <div style="font-size: 16px; font-weight: 700; color: #059669;" id="fan-speed-text">PWM 智能</div>
                     </div>
                 </div>
             </div>
@@ -1961,9 +2012,15 @@ document.addEventListener("DOMContentLoaded", function() {
         var searchBox = document.createElement("div");
         searchBox.id = "myos-search-bar";
         searchBox.style.cssText = "margin: 8px 14px 16px; padding: 8px 14px; background: rgba(0,0,0,0.04); border-radius: 12px; font-size: 12px; color: #9ca3af; display: flex; align-items: center; gap: 8px; border: 1px solid rgba(0,0,0,0.03);";
-        searchBox.innerHTML = "<span>🔍</span><span>搜索菜单或操作</span>";
+        searchBox.innerHTML = '<span>🔍</span><input id="myos-search-input" type="text" placeholder="搜索菜单或操作..." style="border:none!important;background:transparent!important;padding:0!important;font-size:12px;width:100%;outline:none!important;box-shadow:none!important;color:#1f2937!important;">';
         var firstMenu = aside.querySelector("ul") || aside.children[1];
         if (firstMenu) aside.insertBefore(searchBox, firstMenu);
+        document.getElementById("myos-search-input").addEventListener("input", function(e) {
+            var kw = e.target.value.toLowerCase();
+            aside.querySelectorAll("li").forEach(function(li) {
+                li.style.display = (kw === "" || li.innerText.toLowerCase().indexOf(kw) !== -1) ? "" : "none";
+            });
+        });
     }
 });
 
@@ -1981,21 +2038,38 @@ function updateCockpit() {
                 var d = JSON.parse(xhr.responseText);
                 document.getElementById("uptime-field").innerText = d.uptime_min + " 分钟";
                 document.getElementById("cpu-temp-text").innerText = d.cpu_temp + " °C";
+                if (d.fan_speed) document.getElementById("fan-speed-text").innerText = d.fan_speed;
                 document.getElementById("mem-text").innerText = d.mem_pct + "% 内存占用";
                 document.getElementById("mem-bar").style.width = d.mem_pct + "%";
                 document.getElementById("client-text").innerText = d.clients + " 台";
                 document.getElementById("emmc-text").innerText = "eMMC 数据盘: " + d.emmc_avail_gb + " GB 可用";
 
+                var portNames = {wan: "WAN", lan1: "LAN 1", lan2: "LAN 2", lan3: "LAN 3"};
                 ["wan", "lan1", "lan2", "lan3"].forEach(function(p) {
                     var el = document.getElementById("p-" + p);
+                    var labelEl = el ? el.querySelector("span:last-child") : null;
                     if (d.ports && d.ports[p] && d.ports[p].up) {
                         el.classList.add("active");
-                    } else {
+                        var spd = d.ports[p].speed;
+                        var spdStr = (spd === "2500") ? "2.5G" : (spd && spd !== "0" ? spd + "M" : "已连接");
+                        if (labelEl) labelEl.innerText = portNames[p] + " (" + spdStr + ")";
+                    } else if (el) {
                         el.classList.remove("active");
+                        if (labelEl) labelEl.innerText = (p === "wan") ? "WAN (2.5G)" : portNames[p];
                     }
                 });
 
                 if (d.modem) {
+                    var topBadge = document.getElementById("modem-top-badge");
+                    if (topBadge) {
+                        topBadge.innerText = d.modem.ready ? "5G 模组已就绪" : "模组未就绪 (" + d.modem.sim + ")";
+                        topBadge.className = d.modem.ready ? "badge-soft green" : "badge-soft";
+                    }
+                    var dotBox = document.getElementById("device-led-dots");
+                    if (dotBox) {
+                        var dotColor = d.modem.ready ? "#10b981" : "#9ca3af";
+                        dotBox.querySelectorAll("span").forEach(function(s) { s.style.background = dotColor; });
+                    }
                     document.getElementById("oper-name").innerText = d.modem.operator;
                     document.getElementById("sim-badge").innerText = d.modem.sim;
                     document.getElementById("rsrp-text").innerText = d.modem.rsrp + (d.modem.rsrp !== "--" ? " dBm" : "");
