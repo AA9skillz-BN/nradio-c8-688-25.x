@@ -41,6 +41,7 @@ fi
 
 # 3) 移除 miniupnpd 中因版本不匹配而失效的旧补丁
 rm -f feeds/packages/net/miniupnpd/patches/020-descr-filter-fix.patch
+rm -f feeds/packages/net/miniupnpd/patches/030-allow-private-fix.patch
 
 # 1. 注入设备树 (DTS)
 DTS_SOURCE=""
