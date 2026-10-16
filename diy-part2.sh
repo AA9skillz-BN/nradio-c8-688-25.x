@@ -7,7 +7,7 @@
 
 [ -d "openwrt" ] && cd openwrt
 
-# 0. 修复 ImmortalWrt 主线升级 libnftnl-1.3.2 与 nftables-1.1.7 后的 FullCone 补丁兼容问题
+# 0. 修复 ImmortalWrt 主线升级 libnftnl-1.3.2、nftables-1.1.7 以及 miniupnpd 的补丁兼容问题
 if [ -f "package/libs/libnftnl/Makefile" ] && ! grep -q "incompatible-pointer-types" package/libs/libnftnl/Makefile; then
     sed -i '/BuildPackage,libnftnl/i TARGET_CFLAGS += -Wno-error=incompatible-pointer-types' package/libs/libnftnl/Makefile
 fi
@@ -15,14 +15,14 @@ fi
 NFT_PATCH="package/network/utils/nftables/patches/002-nftables-add-fullcone-expression-support.patch"
 NFT_MK="package/network/utils/nftables/Makefile"
 if [ -f "$NFT_PATCH" ] && [ -f "$NFT_MK" ]; then
-    # 1) 剔除补丁中因行号偏移失败的 src/scanner.l 块，保留其余 6 个正常文件的补丁
+    # 1) 剔除 nftables 补丁中因行号偏移失败的 src/scanner.l 块
     awk '
     /^(diff --git a\/src\/scanner\.l|--- a\/src\/scanner\.l)/ { skip=1; next }
     /^(diff --git |--- a\/)/ { if (skip) skip=0 }
     !skip { print }
     ' "$NFT_PATCH" > "${NFT_PATCH}.tmp" && mv -f "${NFT_PATCH}.tmp" "$NFT_PATCH"
 
-    # 2) 在解包打补丁后，自动在 src/scanner.l 的 masquerade 下方克隆生成 fullcone 词法规则
+    # 2) 自动在 src/scanner.l 的 masquerade 下方克隆生成 fullcone 词法规则
     if ! grep -q 'MASQUERADE/FULLCONE' "$NFT_MK"; then
         awk '
         /BuildPackage,nftables/ && !inserted {
@@ -38,6 +38,9 @@ if [ -f "$NFT_PATCH" ] && [ -f "$NFT_MK" ]; then
         ' "$NFT_MK" > "${NFT_MK}.tmp" && mv -f "${NFT_MK}.tmp" "$NFT_MK"
     fi
 fi
+
+# 3) 移除 miniupnpd 中因版本不匹配而失效的旧补丁
+rm -f feeds/packages/net/miniupnpd/patches/020-descr-filter-fix.patch
 
 # 1. 注入设备树 (DTS)
 DTS_SOURCE=""
