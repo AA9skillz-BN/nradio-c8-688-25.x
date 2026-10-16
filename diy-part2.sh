@@ -360,7 +360,7 @@ trap - EXIT INT TERM
 EOF
 chmod +x package/base-files/files/usr/bin/modem_nitz_sync
 
-# 16. 后台硬件温控守护 + 5G 智能看门狗自愈脚本 (无 SIM 卡自动静默 + 仅重启蜂窝接口)
+# 16. 后台硬件温控守护 + 5G 智能看门狗自愈脚本 (先 Ping 后查串口，零串口争用)
 cat << 'EOF' > package/base-files/files/usr/bin/modem_watchdog
 #!/bin/sh
 # --- A. 24小时后台全天候硬件风扇温控调速 ---
@@ -377,7 +377,7 @@ else
     echo 0 > /sys/class/thermal/cooling_device0/cur_state 2>/dev/null || true
 fi
 
-# --- B. 5G 蜂窝网络连通性看门狗 ---
+# --- B. 5G 蜂窝网络连通性看门狗 (优先通过网卡 Ping 检测，在线时绝不触碰 AT 串口) ---
 DNS_TARGETS="223.5.5.5 119.29.29.29 8.8.8.8"
 FAIL_LOG="/tmp/modem_watchdog_fails"
 [ -f "$FAIL_LOG" ] || echo "0" > "$FAIL_LOG"
@@ -385,24 +385,6 @@ FAIL_LOG="/tmp/modem_watchdog_fails"
 DEV=$(uci -q get network.modem_5g.device)
 if [ -z "$DEV" ] || [ ! -d "/sys/class/net/$DEV" ]; then
     exit 0
-fi
-
-AT_PORT=""
-for p in /dev/ttyUSB1 /dev/ttyUSB2 /dev/ttyUSB0; do
-    [ -c "$p" ] && AT_PORT="$p" && break
-done
-
-# 若未检测到串口或未插入 SIM 卡，则静默退出，防止纯有线路由模式下误触发重连
-if [ -n "$AT_PORT" ] && command -v sms_tool >/dev/null 2>&1; then
-    LOCKDIR="/var/lock/modem_at.lock"
-    if mkdir "$LOCKDIR" 2>/dev/null; then
-        PIN_STATUS=$(sms_tool -d "$AT_PORT" at "AT+CPIN?" 2>/dev/null)
-        rm -rf "$LOCKDIR"
-        if echo "$PIN_STATUS" | grep -qi "ERROR\|CME ERROR"; then
-            echo "0" > "$FAIL_LOG"
-            exit 0
-        fi
-    fi
 fi
 
 is_online=0
@@ -413,9 +395,28 @@ for ip in $DNS_TARGETS; do
     fi
 done
 
+# 网络在线时直接退出，避免定期读写 /dev/ttyUSB* 干扰 luci-app-mt5700 的 Rust 后端
 if [ "$is_online" -eq 1 ]; then
     echo "0" > "$FAIL_LOG"
     exit 0
+fi
+
+AT_PORT=""
+for p in /dev/ttyUSB1 /dev/ttyUSB2 /dev/ttyUSB0 /dev/ttyACM0; do
+    [ -c "$p" ] && AT_PORT="$p" && break
+done
+
+# 仅当 Ping 不通时，才检查是否是因为未插 SIM 卡
+if [ -n "$AT_PORT" ] && command -v sms_tool >/dev/null 2>&1; then
+    LOCKDIR="/var/lock/modem_at.lock"
+    if mkdir "$LOCKDIR" 2>/dev/null; then
+        PIN_STATUS=$(sms_tool -d "$AT_PORT" at "AT+CPIN?" 2>/dev/null)
+        rm -rf "$LOCKDIR"
+        if echo "$PIN_STATUS" | grep -qi "ERROR\|CME ERROR"; then
+            echo "0" > "$FAIL_LOG"
+            exit 0
+        fi
+    fi
 fi
 
 FAILS=$(cat "$FAIL_LOG")
@@ -462,10 +463,6 @@ elif [ "$FAILS" -ge 4 ]; then
 fi
 EOF
 chmod +x package/base-files/files/usr/bin/modem_watchdog
-
-cat << 'EOF' > package/base-files/files/etc/crontabs/root
-*/2 * * * * /usr/bin/modem_watchdog >/dev/null 2>&1
-EOF
 
 # 17. 实体按键长按盲切救砖
 cat << 'EOF' > package/base-files/files/etc/rc.button/reset
