@@ -7,18 +7,9 @@
 
 [ -d "openwrt" ] && cd openwrt
 
-# 0. 修复 ImmortalWrt 主线 libnftnl-1.3.2 升级后 fullcone.c 的 .set 回调函数签名不匹配报错
-if [ -d "package/libs/libnftnl" ]; then
-    # 1) 为 fullcone 补丁中的 nftnl_expr_fullcone_set 补齐 1.3.2 新增的 byteorder 参数
-    for p in package/libs/libnftnl/patches/*fullcone*.patch; do
-        if [ -f "$p" ]; then
-            sed -i '/nftnl_expr_fullcone_set/,+2 s/uint32_t data_len)/uint32_t data_len, uint32_t byteorder)/' "$p"
-        fi
-    done
-    # 2) 在 libnftnl 的 Makefile 中追加编译标志，防止 GCC 因指针签名细微差异中断编译
-    if ! grep -q "Wno-error=incompatible-pointer-types" package/libs/libnftnl/Makefile; then
-        sed -i '/include \$(INCLUDE_DIR)\/package.mk/a TARGET_CFLAGS += -Wno-error=incompatible-pointer-types' package/libs/libnftnl/Makefile
-    fi
+# 0. 修复 ImmortalWrt 主线 libnftnl-1.3.2 中 expr/fullcone.c 的指针类型报错
+if [ -f "package/libs/libnftnl/Makefile" ] && ! grep -q "incompatible-pointer-types" package/libs/libnftnl/Makefile; then
+    sed -i '/BuildPackage,libnftnl/i TARGET_CFLAGS += -Wno-error=incompatible-pointer-types' package/libs/libnftnl/Makefile
 fi
 
 # 1. 注入设备树 (DTS)
