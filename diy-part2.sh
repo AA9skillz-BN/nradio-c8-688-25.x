@@ -427,7 +427,7 @@ for ip in $DNS_TARGETS; do
     fi
 done
 
-# 网络在线时直接退出，避免定期读写 /dev/ttyUSB* 干扰 luci-app-mt5700 的 Rust 后端
+# 网络在线时直接退出，把 /dev/ttyUSB* 100% 留给 luci-app-mt5700 的 Rust 后端
 if [ "$is_online" -eq 1 ]; then
     echo "0" > "$FAIL_LOG"
     exit 0
@@ -495,6 +495,10 @@ elif [ "$FAILS" -ge 4 ]; then
 fi
 EOF
 chmod +x package/base-files/files/usr/bin/modem_watchdog
+
+cat << 'EOF' > package/base-files/files/etc/crontabs/root
+*/2 * * * * /usr/bin/modem_watchdog >/dev/null 2>&1
+EOF
 
 # 17. 实体按键长按盲切救砖
 cat << 'EOF' > package/base-files/files/etc/rc.button/reset
