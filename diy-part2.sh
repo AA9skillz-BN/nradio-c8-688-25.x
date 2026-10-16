@@ -39,9 +39,9 @@ if [ -f "$NFT_PATCH" ] && [ -f "$NFT_MK" ]; then
     fi
 fi
 
-# 3) 移除 miniupnpd 中因版本不匹配而失效的旧补丁
-rm -f feeds/packages/net/miniupnpd/patches/020-descr-filter-fix.patch
-rm -f feeds/packages/net/miniupnpd/patches/030-allow-private-fix.patch
+# 3) 彻底移除 miniupnpd-2.3.11 中除 010 以外所有因版本升级而失效的旧补丁
+find feeds/packages/net/miniupnpd/patches/ package/feeds/packages/miniupnpd/patches/ \
+  -type f -name "*.patch" ! -name "010-*" -delete 2>/dev/null || true
 
 # 1. 注入设备树 (DTS)
 DTS_SOURCE=""
