@@ -1,15 +1,41 @@
 name: Build ImmortalWrt 25.x for NRadio C8-688
 
 on:
-  # 1. 允许在 GitHub 网页端手动触发构建
+  # 1. 允许在 GitHub 网页端/手机 App 手动触发构建（带可视化配置面板）
   workflow_dispatch:
+    inputs:
+      repo_url:
+        description: '源码仓库'
+        required: true
+        default: 'https://github.com/immortalwrt/immortalwrt'
+        type: string
+      repo_branch:
+        description: '源码分支'
+        required: true
+        default: 'master'
+        type: string
+      extra_config:
+        description: '临时追加的插件配置（多行按换行分隔）'
+        required: false
+        default: ''
+        type: string
+      config_only:
+        description: '仅校验并输出 .config，不进行完整编译'
+        required: true
+        default: false
+        type: boolean
+      clean_releases:
+        description: '编译前清理历史 Release 与 Tag'
+        required: true
+        default: true
+        type: boolean
   # 2. 定时构建：北京时间每周三凌晨 03:00 (UTC 每周二 19:00)
   schedule:
     - cron: '0 19 * * 2'
 
 env:
-  REPO_URL: https://github.com/immortalwrt/immortalwrt
-  REPO_BRANCH: master
+  REPO_URL: ${{ github.event.inputs.repo_url || 'https://github.com/immortalwrt/immortalwrt' }}
+  REPO_BRANCH: ${{ github.event.inputs.repo_branch || 'master' }}
   CONFIG_FILE: c8-688.config
   DIY_P1_SH: diy-part1.sh
   DIY_P2_SH: diy-part2.sh
@@ -28,6 +54,7 @@ jobs:
       uses: actions/checkout@v4
 
     - name: Free Disk Space (Maximize Runner Storage)
+      if: ${{ github.event.inputs.config_only != 'true' }}
       uses: jlumbroso/free-disk-space@main
       with:
         tool-cache: false
@@ -61,6 +88,7 @@ jobs:
 
     # ================= 1. CCache 编译对象持久化缓存 =================
     - name: Cache CCache
+      if: ${{ github.event.inputs.config_only != 'true' }}
       uses: actions/cache@v4
       with:
         path: /workdir/openwrt/.ccache
@@ -84,16 +112,49 @@ jobs:
 
     - name: Load Config & Generate .config
       working-directory: ./openwrt
+      env:
+        EXTRA_CONFIG: ${{ github.event.inputs.extra_config }}
       run: |
         if [ -e $GITHUB_WORKSPACE/$CONFIG_FILE ]; then
           cp $GITHUB_WORKSPACE/$CONFIG_FILE .config
         fi
         echo "CONFIG_DEVEL=y" >> .config
         echo "CONFIG_CCACHE=y" >> .config
+
+        if [ -n "$EXTRA_CONFIG" ]; then
+          echo ">>> 正在注入临时追加的插件配置..."
+          echo "" >> .config
+          echo "# --- Workflow 临时追加配置 ---" >> .config
+          echo "$EXTRA_CONFIG" | tr ',;' '\n' | while IFS= read -r line; do
+            line=$(echo "$line" \vert{} sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            [ -z "$line" ] && continue
+            case "$line" in
+              \#*|CONFIG_*=*)
+                echo "$line" >> .config
+                echo "已追加配置: $line"
+                ;;
+              *)
+                for pkg in $line; do
+                  echo "CONFIG_PACKAGE_${pkg}=y" >> .config
+                  echo "已智能补全并追加插件: CONFIG_PACKAGE_${pkg}=y"
+                done
+                ;;
+            esac
+          done
+        fi
+
         make defconfig
+
+    - name: Upload Validated .config (仅校验模式输出)
+      if: ${{ github.event.inputs.config_only == 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: Validated-Config-${{ github.run_number }}
+        path: /workdir/openwrt/.config
 
     # ================= 2. 交叉工具链持久化缓存 (Toolchain Cache) =================
     - name: Cache Toolchain & Host Tools
+      if: ${{ github.event.inputs.config_only != 'true' }}
       uses: actions/cache@v4
       id: toolchain-cache
       with:
@@ -105,6 +166,7 @@ jobs:
           ${{ runner.os }}-toolchain-${{ hashFiles('openwrt/toolchain/**', 'openwrt/tools/**') }}-${{ runner.os }}-toolchain-
 
     - name: Fast Multi-thread Download
+      if: ${{ github.event.inputs.config_only != 'true' }}
       working-directory: ./openwrt
       run: |
         make download -j16
@@ -112,6 +174,7 @@ jobs:
         find dl -size -1024c -exec rm -f {} \;
 
     - name: Optimized Compile Firmware
+      if: ${{ github.event.inputs.config_only != 'true' }}
       id: compile
       working-directory: ./openwrt
       run: |
@@ -170,6 +233,7 @@ jobs:
           ## NRadio C8-688 ImmortalWrt Master (Kernel 6.12) 固件发布
           * 源码仓库: [AA9skillz-BN/nradio-c8-688-25.x](https://github.com/AA9skillz-BN/nradio-c8-688-25.x)
           * 构建时间: ${{ env.BUILD_VER }}
+          * 临时追加配置: `${{ github.event.inputs.extra_config || '无 (标准满血配置)' }}`
           * 默认管理后台: `192.168.66.1`
           * 引导目标: 副系统 (System B: `kernel_2nd` + `rootfs_2nd`)
           * Wi-Fi 名称: `NRadio-C8-688-2.4G` / `NRadio-C8-688-5G` (160MHz 满血)
@@ -185,7 +249,7 @@ jobs:
     # ================= 3. 自动清理历史 Release，仅保留最新 3 个 =================
     - name: Delete Older Releases
       uses: dev-drprasad/delete-older-releases@v0.3.3
-      if: steps.organize.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true'
+      if: steps.organize.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true' && github.event.inputs.clean_releases != 'false'
       with:
         keep_latest: 3
         delete_tags: true
